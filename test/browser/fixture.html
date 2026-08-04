@@ -112,6 +112,30 @@
             powerUserSettings: { personas: {} },
             getTokenCountAsync: async text => Math.ceil(String(text).length / 4),
             saveSettingsDebounced: () => {},
+            getPresetManager: () => ({
+                getAllPresets: () => ['Default', 'Deep'],
+                getSelectedPresetName: () => 'Default',
+                findPreset: name => `value:${name}`,
+                selectPreset: async () => {},
+            }),
+            getCharacterCardFields: () => ({}),
+            writeExtensionField: async (index, key, value) => {
+                context.characters[index].data ??= {};
+                context.characters[index].data.extensions ??= {};
+                context.characters[index].data.extensions[key] = value;
+            },
+            ConnectionManagerRequestService: {
+                isProfileSupported: () => true,
+                sendRequest: async (profileId) => `reply from ${profileId}`,
+            },
+        };
+        context.powerUserSettings.personas = { 'me.png': 'Me' };
+        context.extensionSettings.connectionManager = {
+            profiles: [
+                { id: 'p1', name: 'Local', mode: 'tc', model: 'llama' },
+                { id: 'p2', name: 'Claude', mode: 'cc', model: 'claude' },
+            ],
+            selectedProfile: 'p1',
         };
         globalThis.SillyTavern = { getContext: () => context };
 

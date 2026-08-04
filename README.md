@@ -59,6 +59,74 @@ Each run also lists what a test cannot reproduce. A test build skips extensions 
 history at the last moment, such as vector storage and summaries, so a real reply may contain
 content a test does not show. These notes appear on the run itself rather than in the manual.
 
+## The five tabs
+
+### Test cases
+
+Group test cases into suites, and edit one at a time. Every setting is chosen from what you
+actually have installed, so a test cannot name a character or preset that is not there.
+
+Each test case can carry checks:
+
+- a prompt section is present, absent, or appears only once
+- the prompt stays under a token limit
+- some text does or does not appear
+- a lorebook entry does or does not activate
+- the cached part of the prompt stays the same between runs
+
+A check that cannot be made, such as a lorebook check on a run with no lorebook activity, is
+reported as unchecked rather than counted as a pass or a failure.
+
+### Run
+
+Runs a whole suite, one test case at a time. Before it starts it tells you what will happen: which
+cases cannot run, which characters have no chat yet, and whether you have unsaved preset changes
+that running would discard.
+
+While a suite runs, your character, persona, preset, and connection profile are changed to match
+each test case. They are put back when the run finishes, when you stop it, and when something goes
+wrong.
+
+### Compare
+
+Shows what changed between two runs of the same test case, section by section, with the token cost
+of each change. Parts that change on every build, such as a dice roll or a timestamp, are hidden by
+default so a real change stands out; there is a switch to show them.
+
+If the two runs were made with different settings, such as a different model or a changed macro
+pack, that is listed above the differences.
+
+### Side by side
+
+Sends a saved prompt to two connections and shows both replies next to each other. This is the only
+part of Prompting Lab that uses tokens. Nothing is added to any chat, and the connection you are
+using does not change.
+
+### Settings
+
+How many results to keep per test case, the prompt caching depth, exporting and importing suites,
+and saving test cases inside a character card.
+
+## Sharing tests
+
+Export a suite to a file to move it to another installation or send it to someone else. You can
+export with or without the saved results.
+
+Test cases can also be saved inside a character card, so they travel with the card. Only the test
+definitions are stored, never results, and Prompting Lab tells you what will travel before it
+saves. Settings that only mean something on your own machine, the connection profile and the
+persona, are left behind.
+
+## Prompt caching
+
+The cache check needs to know the caching depth your server uses. Only an administrator can read
+that value, so you enter it in Settings. Leave it empty and the caching checks are skipped rather
+than guessed.
+
+With it set, Prompting Lab works out which part of your prompt gets cached and warns you when
+something inside that part changes on every build, which stops caching from working and costs you
+money. Where it can, it names the macro responsible.
+
 ## Development
 
 ```sh

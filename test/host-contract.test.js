@@ -25,6 +25,40 @@ function exportPattern(symbol) {
     return new RegExp(`export[^;\\n]*\\b${symbol}\\b|export\\s+(?:async\\s+)?(?:function|class|const|let)\\s+${symbol}\\b`);
 }
 
+/** Extracts one function's body by matching braces from its declaration. */
+function functionBody(source, name) {
+    const start = source.search(new RegExp(`function\\s+${name}\\s*\\(`));
+    if (start < 0) {
+        return '';
+    }
+    const open = source.indexOf('{', start);
+    if (open < 0) {
+        return '';
+    }
+    let depth = 0;
+    for (let index = open; index < source.length; index++) {
+        if (source[index] === '{') {
+            depth += 1;
+        } else if (source[index] === '}') {
+            depth -= 1;
+            if (depth === 0) {
+                return source.slice(open, index + 1);
+            }
+        }
+    }
+    return '';
+}
+
+/** Small stable hash, so a fingerprint can be written into this file. */
+function hash(text) {
+    let value = 0x811c9dc5;
+    for (let index = 0; index < text.length; index++) {
+        value ^= text.charCodeAt(index);
+        value = Math.imul(value, 0x01000193) >>> 0;
+    }
+    return value.toString(16).padStart(8, '0');
+}
+
 test('SillyBunny exposes the host contracts used by Prompting Lab', {
     skip: !(await available()) && !process.env.PROMPT_LAB_REQUIRE_HOST,
 }, async () => {
@@ -119,11 +153,28 @@ test('SillyBunny exposes the host contracts used by Prompting Lab', {
 
     await test('the prompt caching walker still works the way the analyzer mirrors it', () => {
         assert.match(converters, /export\s+function\s+cachingAtDepthForClaude/);
-        // The analyzer reproduces these three rules; if any disappears, its
-        // predicted cache breakpoints stop matching what the server does.
-        assert.match(converters, /cache_control/);
-        assert.match(converters, /ephemeral/);
-        assert.match(converters, /depth\s*===\s*cachingAtDepth/);
+
+        const body = functionBody(converters, 'cachingAtDepthForClaude');
+        assert.ok(body, 'cachingAtDepthForClaude could not be found');
+
+        // Each rule below is reproduced in src/cache-analyzer.js. If one of
+        // them changes, the Lab's predicted cache boundaries stop matching
+        // where the server actually puts them.
+        assert.match(body, /passedThePrefill/, 'the trailing assistant prefill is no longer skipped');
+        assert.match(body, /for\s*\(\s*let\s+i\s*=\s*messages\.length\s*-\s*1;\s*i\s*>=\s*0;\s*i--/, 'the walk no longer runs backwards');
+        assert.match(body, /role\s*!==\s*previousRoleName/, 'depth is no longer counted by role switches');
+        assert.match(body, /depth\s*===\s*cachingAtDepth\s*\|\|\s*depth\s*===\s*cachingAtDepth\s*\+\s*2/, 'the two boundary positions changed');
+        assert.match(body, /if\s*\(\s*depth\s*===\s*cachingAtDepth\s*\+\s*2\s*\)\s*\{\s*break/, 'the walk no longer stops after the second boundary');
+        assert.match(body, /cache_control\s*=\s*\{\s*type:\s*'ephemeral'/, 'the cache marker changed shape');
+
+        // A normalized fingerprint of the whole rule. Whitespace and comments
+        // are ignored, so this only trips when the logic itself moves.
+        const fingerprint = body.replace(/\/\/[^\n]*/g, '').replace(/\s+/g, '');
+        assert.equal(
+            hash(fingerprint),
+            'b29f7070',
+            'cachingAtDepthForClaude changed. Re-check src/cache-analyzer.js against it, then update this fingerprint.',
+        );
     });
 
     await test('the extension settings host elements exist', () => {
