@@ -5,7 +5,7 @@ import {
     MAX_EXPORT_WITH_BASELINES_BYTES,
     MAX_REGEX_LENGTH,
 } from './constants.js';
-import { migrateCase, migrateRun, migrateSuite, newId, normalizeCase, normalizeSuite } from './schema.js';
+import { migrateCase, migrateDraft, migrateRun, migrateSuite, newId, normalizeCase, normalizeSuite } from './schema.js';
 
 /**
  * Moves suites between installations as a plain JSON file.
@@ -34,8 +34,9 @@ function byteLength(text) {
  * @param {object[]} cases its test cases
  * @param {object[]} baselineRuns baseline runs, when they are being included
  */
-export function buildExport(suite, cases, baselineRuns = null) {
+export function buildExport(suite, cases, baselineRuns = null, presets = null) {
     const includeBaselines = Array.isArray(baselineRuns) && baselineRuns.length > 0;
+    const includePresets = Array.isArray(presets) && presets.length > 0;
     const payload = {
         format: EXPORT_FORMAT,
         version: EXPORT_VERSION,
@@ -44,6 +45,7 @@ export function buildExport(suite, cases, baselineRuns = null) {
         suite: normalizeSuite({ ...suite, baselines: includeBaselines ? suite.baselines : {} }),
         cases: cases.map(item => normalizeCase(item)),
         ...(includeBaselines ? { baselineRuns } : {}),
+        ...(includePresets ? { presets } : {}),
     };
     const text = JSON.stringify(payload, null, 2);
     const limit = includeBaselines ? MAX_EXPORT_WITH_BASELINES_BYTES : MAX_EXPORT_BYTES;
@@ -76,7 +78,10 @@ export function formatSize(bytes) {
  * one that came from a copy of your own, cannot overwrite what is already
  * saved. Baseline pointers are rewritten to follow the new identifiers.
  *
- * @returns {{suite: object, cases: object[], baselineRuns: object[]}}
+ * Presets travelling with a suite arrive as drafts. They are never installed
+ * on their own, so a shared file cannot change the settings you already have.
+ *
+ * @returns {{suite: object, cases: object[], baselineRuns: object[], presets: object[]}}
  */
 export function parseImport(text) {
     let payload;
@@ -154,6 +159,9 @@ export function parseImport(text) {
         }),
         cases: importedCases,
         baselineRuns,
+        presets: (Array.isArray(payload.presets) ? payload.presets : [])
+            .map(draft => migrateDraft({ ...draft, id: newId(), publishedAs: '' }))
+            .filter(Boolean),
     };
 }
 

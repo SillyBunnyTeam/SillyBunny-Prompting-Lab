@@ -1,18 +1,22 @@
-import { ASSERTION, ASSERTION_LABEL } from '../constants.js';
-import { button, element, emptyState, errorMessage, field, replace, statusRegion } from '../dom.js';
+import { ASSERTION, ASSERTION_LABEL, SECTION_LABEL } from '../constants.js';
+import { button, element, emptyState, errorMessage, field, promptField, replace, statusRegion } from '../dom.js';
 import { getContext } from '../host.js';
 import * as lab from '../lab.js';
-import { createCase, createSuite, validateCase } from '../schema.js';
+import { MODE, PRESET_API_IDS, labelForApiId, modeOf } from '../presets.js';
+import { createCase, createSuite, pinnedMode, validateCase } from '../schema.js';
 import * as storage from '../storage.js';
+
+const SCOPES = ['total', 'system', 'final'];
 
 /**
  * Lists suites and their test cases, and edits one case at a time.
  * Every pin is chosen from what is actually installed, so a case cannot be
  * written that names a character or preset that does not exist.
  */
-export function createCasesTab({ onChanged = null } = {}) {
+export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
     let root = null;
     let suiteSelect = null;
+    let searchInput = null;
     let listHost = null;
     let editorHost = null;
     let status = null;
@@ -21,6 +25,7 @@ export function createCasesTab({ onChanged = null } = {}) {
     let activeSuite = null;
     let cases = [];
     let editing = null;
+    let selected = new Set();
 
     async function reload() {
         suites = await storage.listSuites();
@@ -30,6 +35,7 @@ export function createCasesTab({ onChanged = null } = {}) {
             activeSuite = suites.find(suite => suite.id === activeSuite.id) ?? null;
         }
         cases = activeSuite ? await lab.getSuiteCases(activeSuite) : [];
+        selected = new Set([...selected].filter(id => cases.some(item => item.id === id)));
         renderAll();
         onChanged?.();
     }
@@ -43,6 +49,32 @@ export function createCasesTab({ onChanged = null } = {}) {
             suiteSelect.value = activeSuite.id;
         }
         suiteSelect.disabled = suites.length === 0;
+    }
+
+    function visibleCases() {
+        const term = searchInput.value.trim().toLowerCase();
+        if (!term) {
+            return cases;
+        }
+        return cases.filter(testCase => [
+            testCase.name,
+            testCase.notes,
+            testCase.tags.join(' '),
+            testCase.pins.characterAvatar,
+            testCase.pins.presets.map(ref => ref.name).join(' '),
+        ].join(' ').toLowerCase().includes(term));
+    }
+
+    function describeCase(testCase) {
+        const parts = [testCase.pins.characterAvatar || 'no character'];
+        for (const ref of testCase.pins.presets) {
+            parts.push(ref.name);
+        }
+        parts.push(`${testCase.assertions.length} check${testCase.assertions.length === 1 ? '' : 's'}`);
+        if (testCase.tags.length) {
+            parts.push(testCase.tags.join(', '));
+        }
+        return parts.join(' · ');
     }
 
     function renderList() {
@@ -61,22 +93,42 @@ export function createCasesTab({ onChanged = null } = {}) {
             ));
             return;
         }
+        const shown = visibleCases();
+        if (!shown.length) {
+            listHost.append(emptyState('Nothing matches.', 'Clear the search box to see every test case again.'));
+            return;
+        }
+
         const list = element('ul', { className: 'sbpl-case-list' });
-        for (const testCase of cases) {
+        for (const testCase of shown) {
             const item = element('li', { className: 'sbpl-case-item' });
+
+            const pick = element('input', { className: 'sbpl-checkbox', attributes: { type: 'checkbox' } });
+            pick.checked = selected.has(testCase.id);
+            pick.setAttribute('aria-label', `Select ${testCase.name}`);
+            pick.addEventListener('change', () => {
+                if (pick.checked) {
+                    selected.add(testCase.id);
+                } else {
+                    selected.delete(testCase.id);
+                }
+                renderList();
+            });
+
             const label = element('div', { className: 'sbpl-case-label' });
             label.append(
                 element('span', { className: 'sbpl-case-name', text: testCase.name }),
-                element('span', {
-                    className: 'sbpl-case-meta',
-                    text: `${testCase.pins.characterAvatar || 'no character'} · ${testCase.assertions.length} check${testCase.assertions.length === 1 ? '' : 's'}`,
-                }),
+                element('span', { className: 'sbpl-case-meta', text: describeCase(testCase) }),
             );
+
             const actions = element('div', { className: 'sbpl-case-actions' });
             actions.append(
                 button('Edit', () => {
-                    editing = { ...testCase };
+                    editing = structuredClone(testCase);
                     renderEditor();
+                }, { className: 'menu_button sbpl-button' }),
+                button('Duplicate', () => {
+                    void duplicate([testCase]);
                 }, { className: 'menu_button sbpl-button' }),
                 button('Delete', async () => {
                     await storage.deleteCase(testCase.id);
@@ -87,10 +139,82 @@ export function createCasesTab({ onChanged = null } = {}) {
                     await reload();
                 }, { className: 'menu_button sbpl-button' }),
             );
-            item.append(label, actions);
+            if (onQuickRun) {
+                actions.prepend(button('Run this one', () => onQuickRun(testCase), {
+                    className: 'menu_button sbpl-button',
+                }));
+            }
+            item.append(pick, label, actions);
             list.append(item);
         }
-        listHost.append(list);
+        listHost.append(renderBulkBar(shown), list);
+    }
+
+    function renderBulkBar(shown) {
+        const bar = element('div', { className: 'sbpl-bulk' });
+        const all = element('input', { className: 'sbpl-checkbox', attributes: { type: 'checkbox' } });
+        all.checked = shown.length > 0 && shown.every(testCase => selected.has(testCase.id));
+        all.setAttribute('aria-label', 'Select every test case shown');
+        all.addEventListener('change', () => {
+            for (const testCase of shown) {
+                if (all.checked) {
+                    selected.add(testCase.id);
+                } else {
+                    selected.delete(testCase.id);
+                }
+            }
+            renderList();
+        });
+        bar.append(all, element('span', {
+            className: 'sbpl-case-meta',
+            text: selected.size ? `${selected.size} selected` : 'Select test cases to work on several at once',
+        }));
+        if (selected.size) {
+            const chosen = () => cases.filter(testCase => selected.has(testCase.id));
+            const tagInput = element('input', {
+                className: 'text_pole sbpl-input',
+                attributes: { type: 'text', placeholder: 'Tag', 'aria-label': 'Tag to add' },
+            });
+            bar.append(
+                button('Duplicate', () => { void duplicate(chosen()); }, { className: 'menu_button sbpl-button' }),
+                tagInput,
+                button('Add tag', async () => {
+                    const tag = tagInput.value.trim();
+                    if (!tag) {
+                        return;
+                    }
+                    for (const testCase of chosen()) {
+                        if (!testCase.tags.includes(tag)) {
+                            await storage.saveCase({ ...testCase, tags: [...testCase.tags, tag] });
+                        }
+                    }
+                    status.textContent = `Tagged ${selected.size} test case${selected.size === 1 ? '' : 's'} with "${tag}".`;
+                    await reload();
+                }, { className: 'menu_button sbpl-button' }),
+                button('Delete', async () => {
+                    const count = selected.size;
+                    for (const testCase of chosen()) {
+                        await storage.deleteCase(testCase.id);
+                    }
+                    selected.clear();
+                    editing = null;
+                    status.textContent = `Deleted ${count} test case${count === 1 ? '' : 's'}.`;
+                    await reload();
+                }, { className: 'menu_button sbpl-button' }),
+            );
+        }
+        return bar;
+    }
+
+    async function duplicate(list) {
+        for (const testCase of list) {
+            const copy = createCase({ ...structuredClone(testCase), id: undefined, name: `${testCase.name} (copy)` });
+            const saved = await storage.saveCase(copy);
+            await storage.saveSuite({ ...activeSuite, caseIds: [...activeSuite.caseIds, saved.id] });
+            activeSuite = await storage.getSuite(activeSuite.id);
+        }
+        status.textContent = `Duplicated ${list.length} test case${list.length === 1 ? '' : 's'}.`;
+        await reload();
     }
 
     function optionList(select, items, { valueKey, labelKey, includeBlank = '' }) {
@@ -106,6 +230,8 @@ export function createCasesTab({ onChanged = null } = {}) {
         }
         replace(select, ...options);
     }
+
+    /* ------------------------------------------------------------ editor */
 
     function renderEditor() {
         replace(editorHost);
@@ -175,25 +301,22 @@ export function createCasesTab({ onChanged = null } = {}) {
                 : (promptTagsSelect.value === '' ? null : editing.pins.promptTags);
         });
 
-        const presetSelect = element('select', { className: 'text_pole sbpl-select' });
-        optionList(presetSelect, options.presets.map(name => ({ name })), {
-            valueKey: 'name',
-            labelKey: 'name',
-            includeBlank: 'Leave the preset as it is',
-        });
-        presetSelect.value = editing.pins.preset?.name ?? '';
-        presetSelect.addEventListener('change', () => {
-            editing.pins.preset = presetSelect.value
-                ? { apiId: '', name: presetSelect.value }
-                : null;
+        const notesInput = element('textarea', { className: 'text_pole sbpl-textarea', attributes: { rows: '2' } });
+        notesInput.value = editing.notes;
+        notesInput.addEventListener('input', () => { editing.notes = notesInput.value; });
+
+        const tagsInput = element('input', { className: 'text_pole sbpl-input', attributes: { type: 'text' } });
+        tagsInput.value = editing.tags.join(', ');
+        tagsInput.addEventListener('input', () => {
+            editing.tags = tagsInput.value.split(',').map(tag => tag.trim()).filter(Boolean);
         });
 
-        const messageInput = element('textarea', {
-            className: 'text_pole sbpl-textarea',
-            attributes: { rows: '3' },
+        const message = promptField('Example message', {
+            rows: 3,
+            hint: 'Added to the chat while the prompt is built, then removed. Nothing is sent and nothing is saved to the chat.',
         });
-        messageInput.value = editing.userMessage;
-        messageInput.addEventListener('input', () => { editing.userMessage = messageInput.value; });
+        message.textarea.value = editing.userMessage;
+        message.textarea.addEventListener('input', () => { editing.userMessage = message.textarea.value; });
 
         form.append(
             field('Name', nameInput),
@@ -201,10 +324,10 @@ export function createCasesTab({ onChanged = null } = {}) {
             field('Persona', personaSelect),
             field('Connection profile', profileSelect),
             field('Prompt Tags profile', promptTagsSelect),
-            field('Preset', presetSelect),
-            field('Example message', messageInput, {
-                hint: 'Added to the chat while the prompt is built, then removed. Nothing is sent and nothing is saved to the chat.',
-            }),
+            renderPresetPins(options),
+            field('Notes', notesInput, { hint: 'For you only. Notes are never sent anywhere.' }),
+            field('Tags', tagsInput, { hint: 'Separate tags with commas.' }),
+            message.wrapper,
             renderAssertionEditor(),
         );
 
@@ -237,6 +360,56 @@ export function createCasesTab({ onChanged = null } = {}) {
         editorHost.append(form);
     }
 
+    /**
+     * One preset picker per kind. Chat Completion uses a single preset, while
+     * Text Completion is built from a sampler preset and its templates, so a
+     * case can pin as many of those as it needs.
+     */
+    function renderPresetPins(options) {
+        const wrapper = element('div', { className: 'sbpl-preset-pins' });
+        wrapper.append(element('p', { className: 'sbpl-field-label', text: 'Presets' }));
+        const mode = pinnedMode(editing.pins);
+        for (const apiId of PRESET_API_IDS) {
+            const installed = options.presets[apiId] ?? [];
+            const pinned = editing.pins.presets.find(ref => ref.apiId === apiId);
+            if (!installed.length && !pinned) {
+                continue;
+            }
+            const choices = installed.map(name => ({ name }));
+            if (pinned && !installed.includes(pinned.name)) {
+                choices.push({ name: pinned.name });
+            }
+            const select = element('select', { className: 'text_pole sbpl-select' });
+            optionList(select, choices, {
+                valueKey: 'name',
+                labelKey: 'name',
+                includeBlank: 'Leave as it is',
+            });
+            select.value = pinned?.name ?? '';
+            select.disabled = Boolean(mode) && modeOf(apiId) !== mode && !pinned;
+            select.addEventListener('change', () => {
+                editing.pins.presets = editing.pins.presets.filter(ref => ref.apiId !== apiId);
+                if (select.value) {
+                    editing.pins.presets.push({ apiId, name: select.value });
+                }
+                renderEditor();
+            });
+            const missing = pinned && !installed.includes(pinned.name);
+            wrapper.append(field(labelForApiId(apiId), select, {
+                hint: missing ? 'This preset is not installed in SillyBunny at the moment.' : '',
+            }));
+        }
+        wrapper.append(element('p', {
+            className: 'sbpl-field-hint',
+            text: mode === MODE.CC
+                ? 'Chat Completion uses one preset, so the Text Completion pickers are held back.'
+                : 'A test case can only pin one prompt mode at a time.',
+        }));
+        return wrapper;
+    }
+
+    /* --------------------------------------------------------- checks UI */
+
     function renderAssertionEditor() {
         const wrapper = element('div', { className: 'sbpl-assertions' });
         wrapper.append(element('p', { className: 'sbpl-field-label', text: 'Checks' }));
@@ -245,13 +418,25 @@ export function createCasesTab({ onChanged = null } = {}) {
         const redraw = () => {
             replace(list, ...editing.assertions.map((assertion, index) => {
                 const item = element('li', { className: 'sbpl-assertion-item' });
-                item.append(element('span', {
-                    text: describeAssertion(assertion),
-                }));
-                item.append(button('Remove', () => {
-                    editing.assertions.splice(index, 1);
-                    redraw();
-                }, { className: 'menu_button sbpl-button sbpl-button-quiet' }));
+                const summary = element('span', { text: describeAssertion(assertion) });
+                // The summary is rewritten in place rather than redrawing the
+                // list, so an open check keeps both its settings and the focus.
+                const restate = () => { summary.textContent = describeAssertion(assertion); };
+                item.append(
+                    summary,
+                    button('Edit', () => {
+                        const open = item.querySelector('.sbpl-assertion-details');
+                        if (open) {
+                            open.remove();
+                        } else {
+                            item.append(renderAssertionDetails(assertion, restate));
+                        }
+                    }, { className: 'menu_button sbpl-button sbpl-button-quiet' }),
+                    button('Remove', () => {
+                        editing.assertions.splice(index, 1);
+                        redraw();
+                    }, { className: 'menu_button sbpl-button sbpl-button-quiet' }),
+                );
                 return item;
             }));
             if (!editing.assertions.length) {
@@ -263,26 +448,222 @@ export function createCasesTab({ onChanged = null } = {}) {
         };
         redraw();
 
-        const typeSelect = element('select', { className: 'text_pole sbpl-select' });
+        const typeSelect = element('select', {
+            className: 'text_pole sbpl-select',
+            attributes: { 'aria-label': 'Kind of check' },
+        });
         for (const [type, label] of Object.entries(ASSERTION_LABEL)) {
             typeSelect.append(element('option', { text: label, attributes: { value: type } }));
         }
-        const valueInput = element('input', {
-            className: 'text_pole sbpl-input',
-            attributes: { type: 'text', placeholder: 'Section name, text, or number' },
-        });
         const add = button('Add check', () => {
-            const assertion = buildAssertion(typeSelect.value, valueInput.value);
-            if (assertion) {
-                editing.assertions.push(assertion);
-                valueInput.value = '';
-                redraw();
-            }
+            editing.assertions.push(blankAssertion(typeSelect.value));
+            redraw();
         }, { className: 'menu_button sbpl-button' });
 
         const adder = element('div', { className: 'sbpl-assertion-adder' });
-        adder.append(typeSelect, valueInput, add);
+        adder.append(typeSelect, add);
         wrapper.append(list, adder);
+        return wrapper;
+    }
+
+    /** The settings that belong to one check, shown only while it is open. */
+    function renderAssertionDetails(assertion, redraw) {
+        const wrapper = element('div', { className: 'sbpl-assertion-details' });
+        const onInput = () => redraw();
+
+        const sectionField = () => {
+            const select = element('select', { className: 'text_pole sbpl-select' });
+            const names = Object.keys(SECTION_LABEL);
+            if (assertion.section && !names.includes(assertion.section)) {
+                names.push(assertion.section);
+            }
+            for (const name of names) {
+                select.append(element('option', {
+                    text: SECTION_LABEL[name] ?? name,
+                    attributes: { value: name },
+                }));
+            }
+            select.value = assertion.section || names[0];
+            assertion.section = select.value;
+            select.addEventListener('change', () => {
+                assertion.section = select.value;
+                onInput();
+            });
+            return field('Part of the prompt', select);
+        };
+
+        const scopeField = () => {
+            const select = element('select', { className: 'text_pole sbpl-select' });
+            for (const scope of SCOPES) {
+                select.append(element('option', {
+                    text: scope === 'total' ? 'The whole prompt' : `The ${scope} part`,
+                    attributes: { value: scope },
+                }));
+            }
+            select.value = assertion.scope;
+            select.addEventListener('change', () => {
+                assertion.scope = select.value;
+                onInput();
+            });
+            return field('Where to look', select);
+        };
+
+        const negateField = () => {
+            const input = element('input', { className: 'sbpl-checkbox', attributes: { type: 'checkbox' } });
+            input.checked = Boolean(assertion.negate);
+            input.addEventListener('change', () => {
+                assertion.negate = input.checked;
+                onInput();
+            });
+            const label = element('label', { className: 'sbpl-field sbpl-field-inline' });
+            label.append(input, element('span', { className: 'sbpl-field-label', text: 'Fail if it is found instead' }));
+            return label;
+        };
+
+        switch (assertion.type) {
+            case ASSERTION.SECTION_PRESENT:
+            case ASSERTION.SECTION_ABSENT:
+            case ASSERTION.SECTION_UNIQUE:
+                wrapper.append(sectionField());
+                break;
+            case ASSERTION.TOKEN_CEILING: {
+                const input = element('input', {
+                    className: 'text_pole sbpl-input',
+                    attributes: { type: 'number', min: '1' },
+                });
+                input.value = String(assertion.max);
+                input.addEventListener('input', () => {
+                    assertion.max = Math.max(0, Math.trunc(Number(input.value) || 0));
+                    onInput();
+                });
+                wrapper.append(scopeField(), field('Stay under', input, { hint: 'Tokens.' }));
+                break;
+            }
+            case ASSERTION.CONTENT_MATCH: {
+                const modeSelect = element('select', { className: 'text_pole sbpl-select' });
+                modeSelect.append(
+                    element('option', { text: 'Contains this text', attributes: { value: 'contains' } }),
+                    element('option', { text: 'Matches this pattern', attributes: { value: 'regex' } }),
+                );
+                modeSelect.value = assertion.mode;
+                modeSelect.addEventListener('change', () => {
+                    assertion.mode = modeSelect.value;
+                    onInput();
+                });
+                const valueInput = element('input', { className: 'text_pole sbpl-input', attributes: { type: 'text' } });
+                valueInput.value = assertion.value;
+                valueInput.addEventListener('input', () => { assertion.value = valueInput.value; });
+                valueInput.addEventListener('change', onInput);
+                wrapper.append(scopeField(), field('How to match', modeSelect), field('Text', valueInput), negateField());
+                break;
+            }
+            case ASSERTION.WI_ACTIVATED: {
+                const worldInput = element('input', { className: 'text_pole sbpl-input', attributes: { type: 'text' } });
+                worldInput.value = assertion.worldName;
+                worldInput.addEventListener('input', () => { assertion.worldName = worldInput.value; });
+                worldInput.addEventListener('change', onInput);
+                const keyInput = element('input', { className: 'text_pole sbpl-input', attributes: { type: 'text' } });
+                keyInput.value = assertion.entryKey;
+                keyInput.addEventListener('input', () => { assertion.entryKey = keyInput.value; });
+                keyInput.addEventListener('change', onInput);
+                wrapper.append(
+                    field('Lorebook', worldInput, { hint: 'Leave empty to look in every lorebook.' }),
+                    field('Entry', keyInput),
+                    negateField(),
+                );
+                break;
+            }
+            default:
+                wrapper.append(element('p', {
+                    className: 'sbpl-field-hint',
+                    text: 'This check has nothing to set up.',
+                }));
+        }
+        return wrapper;
+    }
+
+    /* -------------------------------------------------------- generation */
+
+    /**
+     * Writes one test case per character and preset pairing, so a whole matrix
+     * can be set up without repeating the same form.
+     */
+    function renderMatrix(options) {
+        const wrapper = element('div', { className: 'sbpl-matrix' });
+        wrapper.append(
+            element('h3', { className: 'sbpl-preset-heading', text: 'Create several test cases' }),
+            element('p', {
+                className: 'sbpl-field-hint',
+                text: 'Pick characters and presets, and one test case is written for every pairing.',
+            }),
+        );
+
+        const characterList = element('select', {
+            className: 'text_pole sbpl-select',
+            attributes: { multiple: 'multiple', size: '5', 'aria-label': 'Characters' },
+        });
+        for (const character of options.characters) {
+            characterList.append(element('option', { text: character.name, attributes: { value: character.avatar } }));
+        }
+
+        const kindSelect = element('select', {
+            className: 'text_pole sbpl-select',
+            attributes: { 'aria-label': 'Preset kind' },
+        });
+        for (const apiId of PRESET_API_IDS) {
+            kindSelect.append(element('option', { text: labelForApiId(apiId), attributes: { value: apiId } }));
+        }
+        const presetList = element('select', {
+            className: 'text_pole sbpl-select',
+            attributes: { multiple: 'multiple', size: '5', 'aria-label': 'Presets' },
+        });
+        const fillPresets = () => {
+            replace(presetList, ...(options.presets[kindSelect.value] ?? []).map(name => element('option', {
+                text: name,
+                attributes: { value: name },
+            })));
+        };
+        kindSelect.addEventListener('change', fillPresets);
+        fillPresets();
+
+        const create = button('Create test cases', async () => {
+            const avatars = [...characterList.selectedOptions].map(option => option.value);
+            const presets = [...presetList.selectedOptions].map(option => option.value);
+            if (!avatars.length || !presets.length) {
+                status.textContent = 'Pick at least one character and one preset.';
+                return;
+            }
+            const apiId = kindSelect.value;
+            const shared = editing?.pins?.presets?.filter(ref => (
+                ref.apiId !== apiId && modeOf(ref.apiId) === modeOf(apiId)
+            )) ?? [];
+            const ids = [];
+            for (const avatar of avatars) {
+                const character = options.characters.find(item => item.avatar === avatar);
+                for (const preset of presets) {
+                    const testCase = createCase({
+                        name: `${character?.name ?? avatar} · ${preset}`,
+                        pins: {
+                            characterAvatar: avatar,
+                            presets: [...shared, { apiId, name: preset }],
+                        },
+                    });
+                    const saved = await storage.saveCase(testCase);
+                    ids.push(saved.id);
+                }
+            }
+            await storage.saveSuite({ ...activeSuite, caseIds: [...activeSuite.caseIds, ...ids] });
+            status.textContent = `Created ${ids.length} test cases.`;
+            await reload();
+        }, { className: 'menu_button sbpl-button' });
+
+        const grid = element('div', { className: 'sbpl-matrix-grid' });
+        grid.append(
+            field('Characters', characterList, { hint: 'Hold Ctrl or Cmd to pick several.' }),
+            field('Preset kind', kindSelect),
+            field('Presets', presetList, { hint: 'Hold Ctrl or Cmd to pick several.' }),
+        );
+        wrapper.append(grid, create);
         return wrapper;
     }
 
@@ -302,9 +683,16 @@ export function createCasesTab({ onChanged = null } = {}) {
         suiteSelect.addEventListener('change', async () => {
             activeSuite = suites.find(suite => suite.id === suiteSelect.value) ?? null;
             editing = null;
+            selected.clear();
             cases = activeSuite ? await lab.getSuiteCases(activeSuite) : [];
             renderAll();
         });
+
+        searchInput = element('input', {
+            className: 'text_pole sbpl-input',
+            attributes: { type: 'search', placeholder: 'Search test cases', 'aria-label': 'Search test cases' },
+        });
+        searchInput.addEventListener('input', renderList);
 
         const newSuite = button('Create suite', async () => {
             const suite = await storage.saveSuite(createSuite({ name: `Suite ${suites.length + 1}` }));
@@ -322,7 +710,15 @@ export function createCasesTab({ onChanged = null } = {}) {
             renderEditor();
         }, { className: 'menu_button menu_button_primary sbpl-button' });
 
-        controls.append(suiteSelect, newSuite, newCase);
+        const matrix = button('Create several', () => {
+            if (!activeSuite) {
+                status.textContent = 'Create a suite first.';
+                return;
+            }
+            replace(editorHost, renderMatrix(lab.readAvailableOptions(getContext())));
+        }, { className: 'menu_button sbpl-button' });
+
+        controls.append(suiteSelect, searchInput, newSuite, newCase, matrix);
         status = statusRegion('');
         listHost = element('div', { className: 'sbpl-case-list-host' });
         editorHost = element('div', { className: 'sbpl-editor-host' });
@@ -350,25 +746,19 @@ export function createCasesTab({ onChanged = null } = {}) {
     };
 }
 
-function buildAssertion(type, rawValue) {
-    const value = String(rawValue ?? '').trim();
+/** A check of the requested kind, filled in with settings that make sense. */
+export function blankAssertion(type) {
     switch (type) {
-        case ASSERTION.SECTION_PRESENT:
-        case ASSERTION.SECTION_ABSENT:
-        case ASSERTION.SECTION_UNIQUE:
-            return value ? { type, section: value } : null;
-        case ASSERTION.TOKEN_CEILING: {
-            const max = Number(value);
-            return Number.isFinite(max) && max > 0 ? { type, scope: 'total', max: Math.trunc(max) } : null;
-        }
+        case ASSERTION.TOKEN_CEILING:
+            return { type, scope: 'total', max: 1000 };
         case ASSERTION.CONTENT_MATCH:
-            return value ? { type, scope: 'final', mode: 'contains', value, negate: false } : null;
+            return { type, scope: 'final', mode: 'contains', value: '', negate: false };
         case ASSERTION.WI_ACTIVATED:
-            return value ? { type, worldName: '', entryKey: value, negate: false } : null;
+            return { type, worldName: '', entryKey: '', negate: false };
         case ASSERTION.CACHE_PREFIX_STABLE:
             return { type };
         default:
-            return null;
+            return { type, section: Object.keys(SECTION_LABEL)[0] };
     }
 }
 
@@ -378,7 +768,7 @@ export function describeAssertion(assertion) {
         case ASSERTION.SECTION_PRESENT:
         case ASSERTION.SECTION_ABSENT:
         case ASSERTION.SECTION_UNIQUE:
-            return `${label}: ${assertion.section}`;
+            return `${label}: ${SECTION_LABEL[assertion.section] ?? assertion.section}`;
         case ASSERTION.TOKEN_CEILING:
             return `${label}: ${assertion.scope === 'total' ? 'whole prompt' : assertion.scope} under ${assertion.max.toLocaleString()} tokens`;
         case ASSERTION.CONTENT_MATCH:

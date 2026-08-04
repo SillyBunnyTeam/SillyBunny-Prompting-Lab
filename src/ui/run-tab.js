@@ -301,7 +301,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
         }
     }
 
-    async function start() {
+    async function start(onlyCaseId = '') {
         if (running || !activeSuite) {
             return;
         }
@@ -317,11 +317,12 @@ export function createRunTab({ onRunFinished = null } = {}) {
         const host = await loadHost();
         try {
             const report = await lab.preflightSuite(activeSuite, { chatFileChecker: cachedChatFileCheck });
+            const only = id => !onlyCaseId || id === onlyCaseId;
             const result = await lab.runSuite(activeSuite, {
                 signal: controller.signal,
                 host,
-                cases: report.runnable,
-                blocked: report.blocked,
+                cases: report.runnable.filter(testCase => only(testCase.id)),
+                blocked: report.blocked.filter(entry => only(entry.caseId)),
                 onProgress: (event) => {
                     progressBar.max = event.total;
                     if (event.status === 'running') {
@@ -420,6 +421,21 @@ export function createRunTab({ onRunFinished = null } = {}) {
             if (!running) {
                 void refreshSuites();
             }
+        },
+        /** Runs a single test case, so a small change can be checked on its own. */
+        runOne(testCase) {
+            void (async () => {
+                await refreshSuites();
+                const suite = suites.find(item => item.caseIds.includes(testCase.id));
+                if (!suite) {
+                    return;
+                }
+                activeSuite = suite;
+                suiteSelect.value = suite.id;
+                await start(testCase.id);
+            })().catch((error) => {
+                statusLine.textContent = `That test case could not be run: ${errorMessage(error)}`;
+            });
         },
         dispose() {
             controller?.abort();

@@ -1,12 +1,14 @@
 import {
     ASSERTION,
     CASE_VERSION,
+    DRAFT_VERSION,
     MAX_REGEX_LENGTH,
     RUN_VERSION,
     STATUS,
     SUITE_VERSION,
 } from './constants.js';
 import { ANCHOR_LENGTH } from './compare.js';
+import { isSupportedApiId, modeOf, validatePresetPayload } from './presets.js';
 
 /**
  * Pure data helpers for every stored object. No host imports: everything here
@@ -84,22 +86,58 @@ function normalizeVolatileSpan(value) {
 
 /* ------------------------------------------------------------------ pins */
 
+/**
+ * Collects pinned presets. A version 1 case pinned a single preset and often
+ * left the preset type blank, which meant "whatever API happens to be active".
+ * Those are kept as-is so the user can see what needs fixing instead of the
+ * meaning changing under them.
+ */
+function normalizePresetRefs(source) {
+    const raw = Array.isArray(source.presets)
+        ? source.presets
+        : (source.preset ? [source.preset] : []);
+    const refs = [];
+    const seen = new Set();
+    for (const item of raw) {
+        const ref = plainObject(item);
+        const name = text(ref.name);
+        if (!name) {
+            continue;
+        }
+        const apiId = text(ref.apiId);
+        if (seen.has(apiId)) {
+            continue;
+        }
+        seen.add(apiId);
+        refs.push({ apiId, name });
+    }
+    return refs;
+}
+
 export function normalizePins(value) {
     const source = plainObject(value);
-    const preset = plainObject(source.preset);
     const promptTags = plainObject(source.promptTags);
     return {
         characterAvatar: text(source.characterAvatar),
         personaKey: typeof source.personaKey === 'string' && source.personaKey ? source.personaKey : null,
         connectionProfileId: text(source.connectionProfileId),
-        preset: text(preset.name)
-            ? { apiId: text(preset.apiId), name: text(preset.name) }
-            : null,
+        presets: normalizePresetRefs(source),
         promptTags: text(promptTags.profileId) || text(promptTags.profileName)
             ? { profileId: text(promptTags.profileId), profileName: text(promptTags.profileName) }
             : null,
         macroEnhanced: source.macroEnhanced === 'off' ? 'off' : 'record',
     };
+}
+
+/**
+ * The prompt mode a case will run in, judged only from what it pins. Returns
+ * null when the pinned presets do not say.
+ */
+export function pinnedMode(pins) {
+    const modes = new Set(normalizePins(pins).presets
+        .filter(ref => isSupportedApiId(ref.apiId))
+        .map(ref => modeOf(ref.apiId)));
+    return modes.size === 1 ? [...modes][0] : null;
 }
 
 /* ------------------------------------------------------------ assertions */
@@ -253,11 +291,75 @@ export function validateCase(testCase) {
     if (!normalized.pins.characterAvatar) {
         problems.push('Choose a character for this test case.');
     }
+    const modes = new Set(normalized.pins.presets
+        .filter(ref => isSupportedApiId(ref.apiId))
+        .map(ref => modeOf(ref.apiId)));
+    if (modes.size > 1) {
+        problems.push('This test case pins both Chat Completion and Text Completion presets. Only one prompt mode can run at a time.');
+    }
     normalized.assertions.forEach((assertion, index) => {
         for (const problem of validateAssertion(assertion)) {
             problems.push(`Check ${index + 1}: ${problem}`);
         }
     });
+    return problems;
+}
+
+/* -------------------------------------------------------- preset drafts */
+
+/**
+ * A preset kept inside Prompting Lab. Drafts are never applied on their own:
+ * they have to be published into SillyBunny first.
+ */
+export function createDraft(patch = {}) {
+    const now = new Date().toISOString();
+    return normalizeDraft({
+        v: DRAFT_VERSION,
+        id: newId(),
+        createdAt: now,
+        updatedAt: now,
+        ...patch,
+    });
+}
+
+export function normalizeDraft(value) {
+    const source = plainObject(value);
+    const origin = plainObject(source.source);
+    return {
+        v: DRAFT_VERSION,
+        id: text(source.id) || newId(),
+        apiId: text(source.apiId),
+        name: text(source.name, 'Untitled preset') || 'Untitled preset',
+        notes: text(source.notes),
+        tags: list(source.tags).map(tag => text(tag)).filter(Boolean),
+        payload: plainObject(source.payload),
+        source: text(origin.name)
+            ? { name: text(origin.name), fingerprint: text(origin.fingerprint) }
+            : null,
+        publishedAs: text(source.publishedAs),
+        createdAt: text(source.createdAt),
+        updatedAt: text(source.updatedAt),
+    };
+}
+
+export function migrateDraft(value) {
+    const source = plainObject(value);
+    if (integer(source.v, 0, 0) > DRAFT_VERSION) {
+        return null;
+    }
+    return normalizeDraft(source);
+}
+
+export function validateDraft(draft) {
+    const normalized = normalizeDraft(draft);
+    const problems = [];
+    if (!normalized.name.trim()) {
+        problems.push('Give this preset a name.');
+    }
+    if (!isSupportedApiId(normalized.apiId)) {
+        problems.push('Choose which kind of preset this is.');
+    }
+    problems.push(...validatePresetPayload(normalized.apiId, normalized.payload));
     return problems;
 }
 
@@ -345,6 +447,14 @@ export function normalizeRun(value) {
             model: text(environment.model),
             profileName: text(environment.profileName),
             presetName: text(environment.presetName),
+            presets: list(environment.presets).map((entry) => {
+                const ref = plainObject(entry);
+                return {
+                    apiId: text(ref.apiId),
+                    name: text(ref.name),
+                    fingerprint: text(ref.fingerprint),
+                };
+            }).filter(ref => ref.apiId && ref.name),
             personaName: text(environment.personaName),
             characterName: text(environment.characterName),
             promptTagsProfile: environment.promptTagsProfile ?? null,

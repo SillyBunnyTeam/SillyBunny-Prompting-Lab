@@ -1,0 +1,687 @@
+import { button, element, emptyState, errorMessage, field, promptField, replace, statusRegion } from '../dom.js';
+import { countTokens, getContext, listInstalledPresets, publishPreset, readInstalledPreset } from '../host.js';
+import {
+    PRESET_API_IDS,
+    PRESET_FIELDS,
+    addPromptModule,
+    blankPayload,
+    fingerprint,
+    isCcApiId,
+    isReservedPrompt,
+    labelForApiId,
+    listPromptModules,
+    movePromptModule,
+    removePromptModule,
+    reviewConnectionFields,
+    setPromptModuleEnabled,
+    updatePromptModule,
+    withCanonicalName,
+    withoutFields,
+} from '../presets.js';
+import { createDraft, newId, validateDraft } from '../schema.js';
+import * as storage from '../storage.js';
+
+const ROLES = ['system', 'user', 'assistant'];
+
+/**
+ * The preset workshop.
+ *
+ * Presets that SillyBunny has installed are only ever read here. Everything
+ * you change lives in a Prompting Lab draft until you publish it, so an
+ * experiment can never damage a preset you rely on.
+ */
+export function createPresetsTab({ onChanged = null } = {}) {
+    let root = null;
+    let searchInput = null;
+    let typeSelect = null;
+    let libraryHost = null;
+    let editorHost = null;
+    let status = null;
+    let reloadHost = null;
+
+    let drafts = [];
+    let editing = null;
+    let expanded = '';
+
+    async function reload() {
+        drafts = await storage.listDrafts();
+        renderAll();
+        onChanged?.();
+    }
+
+    function matches(name, apiId) {
+        const term = searchInput.value.trim().toLowerCase();
+        if (typeSelect.value && typeSelect.value !== apiId) {
+            return false;
+        }
+        return !term || name.toLowerCase().includes(term);
+    }
+
+    async function copyToDrafts(apiId, name) {
+        const payload = readInstalledPreset(apiId, name);
+        if (!payload) {
+            status.textContent = `"${name}" could not be read from SillyBunny.`;
+            return;
+        }
+        const draft = createDraft({
+            apiId,
+            name: `${name} (copy)`,
+            payload,
+            source: { name, fingerprint: await fingerprint(payload) },
+        });
+        await storage.saveDraft(draft);
+        editing = draft;
+        expanded = '';
+        status.textContent = `Copied "${name}" into your drafts.`;
+        await reload();
+    }
+
+    function renderInstalled() {
+        const wrapper = element('div', { className: 'sbpl-preset-group' });
+        wrapper.append(element('h3', { className: 'sbpl-preset-heading', text: 'Installed in SillyBunny' }));
+        const list = element('ul', { className: 'sbpl-preset-list' });
+        let shown = 0;
+        for (const apiId of PRESET_API_IDS) {
+            for (const name of listInstalledPresets(apiId, getContext())) {
+                if (!matches(name, apiId)) {
+                    continue;
+                }
+                shown += 1;
+                const item = element('li', { className: 'sbpl-preset-item' });
+                const label = element('div', { className: 'sbpl-preset-label' });
+                label.append(
+                    element('span', { className: 'sbpl-preset-name', text: name }),
+                    element('span', { className: 'sbpl-preset-meta', text: labelForApiId(apiId) }),
+                );
+                const actions = element('div', { className: 'sbpl-preset-actions' });
+                actions.append(button('Copy to drafts', () => {
+                    void copyToDrafts(apiId, name).catch((error) => {
+                        status.textContent = errorMessage(error);
+                    });
+                }, { className: 'menu_button sbpl-button' }));
+                item.append(label, actions);
+                list.append(item);
+            }
+        }
+        if (!shown) {
+            wrapper.append(emptyState('Nothing matches.', 'Clear the search box or choose another preset type.'));
+            return wrapper;
+        }
+        wrapper.append(list);
+        return wrapper;
+    }
+
+    function describeDraft(draft) {
+        if (draft.publishedAs) {
+            return `${labelForApiId(draft.apiId)} · published as "${draft.publishedAs}"`;
+        }
+        if (draft.source?.name) {
+            return `${labelForApiId(draft.apiId)} · copied from "${draft.source.name}"`;
+        }
+        return `${labelForApiId(draft.apiId)} · not published yet`;
+    }
+
+    function renderDrafts() {
+        const wrapper = element('div', { className: 'sbpl-preset-group' });
+        wrapper.append(element('h3', { className: 'sbpl-preset-heading', text: 'Your drafts' }));
+        const shown = drafts.filter(draft => matches(draft.name, draft.apiId));
+        if (!shown.length) {
+            wrapper.append(emptyState(
+                'No drafts here yet.',
+                'Copy an installed preset, or start a new one, then publish it when you are happy with it.',
+            ));
+            return wrapper;
+        }
+        const list = element('ul', { className: 'sbpl-preset-list' });
+        for (const draft of shown) {
+            const item = element('li', { className: 'sbpl-preset-item' });
+            const label = element('div', { className: 'sbpl-preset-label' });
+            const meta = element('span', { className: 'sbpl-preset-meta', text: describeDraft(draft) });
+            label.append(element('span', { className: 'sbpl-preset-name', text: draft.name }), meta);
+            void markSourceChanges(draft, meta);
+            const actions = element('div', { className: 'sbpl-preset-actions' });
+            actions.append(
+                button('Edit', () => {
+                    editing = structuredClone(draft);
+                    expanded = '';
+                    renderEditor();
+                }, { className: 'menu_button sbpl-button' }),
+                button('Duplicate', async () => {
+                    const copy = createDraft({ ...draft, id: undefined, name: `${draft.name} (copy)`, publishedAs: '' });
+                    await storage.saveDraft(copy);
+                    status.textContent = `Duplicated "${draft.name}".`;
+                    await reload();
+                }, { className: 'menu_button sbpl-button' }),
+                button('Export', () => exportDraft(draft), { className: 'menu_button sbpl-button' }),
+                button('Delete', async () => {
+                    await storage.deleteDraft(draft.id);
+                    if (editing?.id === draft.id) {
+                        editing = null;
+                    }
+                    status.textContent = `Deleted "${draft.name}".`;
+                    await reload();
+                }, { className: 'menu_button sbpl-button' }),
+            );
+            item.append(label, actions);
+            list.append(item);
+        }
+        wrapper.append(list);
+        return wrapper;
+    }
+
+    /** Says so when the preset a draft was copied from has been changed since. */
+    async function markSourceChanges(draft, meta) {
+        if (!draft.source?.name || !draft.source.fingerprint) {
+            return;
+        }
+        const installed = readInstalledPreset(draft.apiId, draft.source.name);
+        if (!installed) {
+            meta.textContent = `${meta.textContent}, which is no longer installed`;
+            return;
+        }
+        if (await fingerprint(installed) !== draft.source.fingerprint) {
+            meta.textContent = `${meta.textContent}, which has changed since`;
+        }
+    }
+
+    function renderLibrary() {
+        replace(libraryHost, renderInstalled(), renderDrafts());
+    }
+
+    /* ------------------------------------------------------------ editor */
+
+    function renderEditor() {
+        replace(editorHost);
+        if (!editing) {
+            return;
+        }
+        const form = element('div', { className: 'sbpl-editor' });
+
+        const nameInput = element('input', { className: 'text_pole sbpl-input', attributes: { type: 'text' } });
+        nameInput.value = editing.name;
+        nameInput.addEventListener('input', () => { editing.name = nameInput.value; });
+
+        const kindSelect = element('select', { className: 'text_pole sbpl-select' });
+        for (const apiId of PRESET_API_IDS) {
+            kindSelect.append(element('option', { text: labelForApiId(apiId), attributes: { value: apiId } }));
+        }
+        kindSelect.value = editing.apiId;
+        kindSelect.addEventListener('change', () => {
+            editing.apiId = kindSelect.value;
+            renderEditor();
+        });
+
+        const notesInput = element('textarea', { className: 'text_pole sbpl-textarea', attributes: { rows: '2' } });
+        notesInput.value = editing.notes;
+        notesInput.addEventListener('input', () => { editing.notes = notesInput.value; });
+
+        const tagsInput = element('input', { className: 'text_pole sbpl-input', attributes: { type: 'text' } });
+        tagsInput.value = editing.tags.join(', ');
+        tagsInput.addEventListener('input', () => {
+            editing.tags = tagsInput.value.split(',').map(tag => tag.trim()).filter(Boolean);
+        });
+
+        form.append(
+            field('Name', nameInput),
+            field('Kind', kindSelect),
+            field('Notes', notesInput, { hint: 'For you only. Notes are never sent anywhere.' }),
+            field('Tags', tagsInput, { hint: 'Separate tags with commas.' }),
+            isCcApiId(editing.apiId) ? renderPromptModules() : renderFieldEditor(),
+            renderRawEditor(),
+        );
+
+        const problems = element('ul', { className: 'sbpl-problems' });
+        const actions = element('div', { className: 'sbpl-editor-actions' });
+        actions.append(
+            button('Save draft', async () => {
+                const found = validateDraft(editing);
+                replace(problems, ...found.map(text => element('li', { text })));
+                if (found.length) {
+                    return;
+                }
+                const saved = await storage.saveDraft(editing);
+                editing = saved;
+                status.textContent = `Saved "${saved.name}".`;
+                await reload();
+            }, { className: 'menu_button menu_button_primary sbpl-button' }),
+            button('Publish to SillyBunny', () => {
+                const found = validateDraft(editing);
+                replace(problems, ...found.map(text => element('li', { text })));
+                if (!found.length) {
+                    void publish().catch((error) => {
+                        status.textContent = errorMessage(error);
+                    });
+                }
+            }, { className: 'menu_button sbpl-button' }),
+            button('Close', () => {
+                editing = null;
+                renderEditor();
+            }, { className: 'menu_button sbpl-button' }),
+        );
+        form.append(problems, actions);
+        editorHost.append(form);
+    }
+
+    function renderFieldEditor() {
+        const wrapper = element('div', { className: 'sbpl-preset-fields' });
+        const fields = PRESET_FIELDS[editing.apiId];
+        if (!fields) {
+            wrapper.append(element('p', {
+                className: 'sbpl-field-hint',
+                text: 'Sampler presets differ between backends, so they are edited as text below.',
+            }));
+            return wrapper;
+        }
+        for (const spec of fields) {
+            wrapper.append(renderFieldControl(spec));
+        }
+        return wrapper;
+    }
+
+    function renderFieldControl(spec) {
+        const current = editing.payload[spec.key];
+        if (spec.type === 'boolean') {
+            const input = element('input', { className: 'sbpl-checkbox', attributes: { type: 'checkbox' } });
+            input.checked = Boolean(current);
+            input.addEventListener('change', () => { editing.payload[spec.key] = input.checked; });
+            const label = element('label', { className: 'sbpl-field sbpl-field-inline' });
+            label.append(input, element('span', { className: 'sbpl-field-label', text: spec.label }));
+            return label;
+        }
+        if (spec.type === 'prompt') {
+            const { wrapper, textarea } = promptField(spec.label, { rows: spec.rows ?? 4 });
+            textarea.value = typeof current === 'string' ? current : '';
+            textarea.addEventListener('input', () => { editing.payload[spec.key] = textarea.value; });
+            return wrapper;
+        }
+        const input = element('input', {
+            className: 'text_pole sbpl-input',
+            attributes: { type: spec.type === 'number' ? 'number' : 'text' },
+        });
+        input.value = current === undefined || current === null ? '' : String(current);
+        input.addEventListener('input', () => {
+            editing.payload[spec.key] = spec.type === 'number' ? Number(input.value) : input.value;
+        });
+        return field(spec.label, input);
+    }
+
+    /* --------------------------------------------- chat completion modules */
+
+    function renderPromptModules() {
+        const wrapper = element('div', { className: 'sbpl-modules' });
+        const head = element('div', { className: 'sbpl-modules-head' });
+        head.append(
+            element('p', { className: 'sbpl-field-label', text: 'Prompt modules' }),
+            button('Add module', () => {
+                const identifier = newId();
+                editing.payload = addPromptModule(editing.payload, {
+                    identifier,
+                    name: 'New module',
+                    role: 'system',
+                    content: '',
+                });
+                expanded = identifier;
+                renderEditor();
+            }, { className: 'menu_button sbpl-button' }),
+        );
+        wrapper.append(head, element('p', {
+            className: 'sbpl-field-hint',
+            text: 'The prompt is built from top to bottom. Turning a module off leaves it in the preset but keeps it out of the prompt.',
+        }));
+
+        const modules = listPromptModules(editing.payload);
+        if (!modules.length) {
+            wrapper.append(emptyState('No prompt modules.', 'Add one, or paste a full preset into the text view below.'));
+            return wrapper;
+        }
+        const list = element('ul', { className: 'sbpl-module-list' });
+        modules.forEach((module, index) => {
+            list.append(renderModule(module, index, modules.length));
+        });
+        wrapper.append(list);
+        return wrapper;
+    }
+
+    function renderModule(module, index, total) {
+        const { prompt } = module;
+        const item = element('li', { className: 'sbpl-module-item' });
+
+        const toggle = element('input', { className: 'sbpl-checkbox', attributes: { type: 'checkbox' } });
+        toggle.checked = module.enabled;
+        toggle.setAttribute('aria-label', `Use ${prompt.name || prompt.identifier}`);
+        toggle.addEventListener('change', () => {
+            editing.payload = setPromptModuleEnabled(editing.payload, prompt.identifier, toggle.checked);
+        });
+
+        const label = element('div', { className: 'sbpl-module-label' });
+        const tokens = element('span', { className: 'sbpl-module-meta', text: prompt.marker ? 'filled in by SillyBunny' : '' });
+        label.append(element('span', { className: 'sbpl-module-name', text: prompt.name || prompt.identifier }), tokens);
+        if (!prompt.marker && typeof prompt.content === 'string') {
+            void countTokens(prompt.content).then((count) => {
+                tokens.textContent = `${count.toLocaleString()} tokens`;
+            }).catch(() => {});
+        }
+
+        const actions = element('div', { className: 'sbpl-module-actions' });
+        const move = (offset, text) => button(text, () => {
+            editing.payload = movePromptModule(editing.payload, prompt.identifier, offset);
+            renderEditor();
+        }, { className: 'menu_button sbpl-button sbpl-button-quiet', title: `Move ${prompt.name || prompt.identifier} ${offset < 0 ? 'up' : 'down'}` });
+        const up = move(-1, 'Up');
+        const down = move(1, 'Down');
+        up.disabled = index === 0;
+        down.disabled = index === total - 1;
+        actions.append(
+            up,
+            down,
+            button(expanded === prompt.identifier ? 'Done' : 'Edit', () => {
+                expanded = expanded === prompt.identifier ? '' : prompt.identifier;
+                renderEditor();
+            }, { className: 'menu_button sbpl-button sbpl-button-quiet' }),
+        );
+        if (!isReservedPrompt(prompt)) {
+            actions.append(
+                button('Duplicate', () => {
+                    editing.payload = addPromptModule(editing.payload, {
+                        ...structuredClone(prompt),
+                        identifier: newId(),
+                        name: `${prompt.name || prompt.identifier} (copy)`,
+                    });
+                    renderEditor();
+                }, { className: 'menu_button sbpl-button sbpl-button-quiet' }),
+                button('Delete', () => {
+                    editing.payload = removePromptModule(editing.payload, prompt.identifier);
+                    if (expanded === prompt.identifier) {
+                        expanded = '';
+                    }
+                    renderEditor();
+                }, { className: 'menu_button sbpl-button sbpl-button-quiet' }),
+            );
+        }
+
+        const row = element('div', { className: 'sbpl-module-row' });
+        row.append(toggle, label, actions);
+        item.append(row);
+        if (expanded === prompt.identifier) {
+            item.append(renderModuleEditor(prompt));
+        }
+        return item;
+    }
+
+    function renderModuleEditor(prompt) {
+        const wrapper = element('div', { className: 'sbpl-module-editor' });
+        const change = (changes) => {
+            editing.payload = updatePromptModule(editing.payload, prompt.identifier, changes);
+        };
+
+        const nameInput = element('input', { className: 'text_pole sbpl-input', attributes: { type: 'text' } });
+        nameInput.value = prompt.name ?? '';
+        nameInput.addEventListener('input', () => change({ name: nameInput.value }));
+        wrapper.append(field('Module name', nameInput));
+
+        if (prompt.marker) {
+            wrapper.append(element('p', {
+                className: 'sbpl-field-hint',
+                text: 'SillyBunny fills this module in from the character, the chat, or your settings. Only its position can be changed.',
+            }));
+            return wrapper;
+        }
+
+        const roleSelect = element('select', { className: 'text_pole sbpl-select' });
+        for (const role of ROLES) {
+            roleSelect.append(element('option', { text: role, attributes: { value: role } }));
+        }
+        roleSelect.value = ROLES.includes(prompt.role) ? prompt.role : 'system';
+        roleSelect.addEventListener('change', () => change({ role: roleSelect.value }));
+        wrapper.append(field('Speaking as', roleSelect));
+
+        const { wrapper: contentWrapper, textarea } = promptField('Text', { rows: 6 });
+        textarea.value = prompt.content ?? '';
+        textarea.addEventListener('input', () => change({ content: textarea.value }));
+        wrapper.append(contentWrapper);
+
+        const positionSelect = element('select', { className: 'text_pole sbpl-select' });
+        positionSelect.append(
+            element('option', { text: 'In order, with the other modules', attributes: { value: '0' } }),
+            element('option', { text: 'Inside the chat, at a set depth', attributes: { value: '1' } }),
+        );
+        positionSelect.value = String(prompt.injection_position === 1 ? 1 : 0);
+        positionSelect.addEventListener('change', () => {
+            change({ injection_position: Number(positionSelect.value) });
+            renderEditor();
+        });
+        wrapper.append(field('Position', positionSelect));
+
+        if (prompt.injection_position === 1) {
+            const depthInput = element('input', {
+                className: 'text_pole sbpl-input',
+                attributes: { type: 'number', min: '0' },
+            });
+            depthInput.value = String(prompt.injection_depth ?? 4);
+            depthInput.addEventListener('input', () => change({ injection_depth: Number(depthInput.value) }));
+            wrapper.append(field('Depth', depthInput, {
+                hint: 'How many messages up from the end of the chat this module sits.',
+            }));
+        }
+        return wrapper;
+    }
+
+    /* -------------------------------------------------------- text view */
+
+    function renderRawEditor() {
+        const details = element('details', { className: 'sbpl-raw' });
+        details.append(element('summary', { text: 'All settings (text)' }));
+        const { wrapper, textarea } = promptField('Preset contents', { rows: 12, macros: false, hint: 'Every setting this preset holds, including the ones without their own control above.' });
+        textarea.value = JSON.stringify(editing.payload, null, 2);
+        const note = element('p', { className: 'sbpl-field-hint', text: '' });
+        textarea.addEventListener('change', () => {
+            try {
+                const parsed = JSON.parse(textarea.value);
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                    note.textContent = 'A preset has to be a set of settings.';
+                    return;
+                }
+                editing.payload = parsed;
+                note.textContent = 'Applied.';
+                renderEditor();
+            } catch {
+                note.textContent = 'That is not valid preset text, so nothing was changed.';
+            }
+        });
+        details.append(wrapper, note);
+        return details;
+    }
+
+    /* -------------------------------------------------- publish and share */
+
+    async function publish() {
+        const name = editing.name.trim();
+        const payload = withCanonicalName(editing.apiId, editing.payload, name);
+        const savedName = await publishPreset(editing.apiId, name, payload);
+        editing.publishedAs = savedName;
+        await storage.saveDraft(editing);
+        status.textContent = `Published "${savedName}". SillyBunny reads its preset lists while starting, so reload before using it.`;
+        replace(reloadHost, button('Reload SillyBunny', () => {
+            globalThis.location?.reload?.();
+        }, { className: 'menu_button menu_button_primary sbpl-button' }));
+        await reload();
+    }
+
+    function exportDraft(draft) {
+        const fields = reviewConnectionFields(draft.apiId, draft.payload);
+        if (!fields.length) {
+            download(draft, draft.payload);
+            return;
+        }
+        editing = null;
+        renderEditor();
+        const panel = element('div', { className: 'sbpl-review' });
+        panel.append(
+            element('h3', { className: 'sbpl-preset-heading', text: `Before sharing "${draft.name}"` }),
+            element('p', {
+                text: 'This preset holds settings that describe where your requests go. They are left out unless you tick them.',
+            }),
+        );
+        const list = element('ul', { className: 'sbpl-review-list' });
+        const keep = new Set();
+        for (const entry of fields) {
+            const input = element('input', { className: 'sbpl-checkbox', attributes: { type: 'checkbox' } });
+            input.addEventListener('change', () => {
+                if (input.checked) {
+                    keep.add(entry.field);
+                } else {
+                    keep.delete(entry.field);
+                }
+            });
+            const item = element('li', { className: 'sbpl-review-item' });
+            const label = element('label', { className: 'sbpl-field sbpl-field-inline' });
+            label.append(input, element('span', {
+                className: 'sbpl-field-label',
+                text: entry.sensitive ? `${entry.field} (private)` : entry.field,
+            }));
+            item.append(label, element('span', { className: 'sbpl-preset-meta', text: entry.value }));
+            list.append(item);
+        }
+        const actions = element('div', { className: 'sbpl-editor-actions' });
+        actions.append(
+            button('Export', () => {
+                const dropped = fields.map(entry => entry.field).filter(name => !keep.has(name));
+                download(draft, withoutFields(draft.payload, dropped));
+                replace(editorHost);
+            }, { className: 'menu_button menu_button_primary sbpl-button' }),
+            button('Cancel', () => replace(editorHost), { className: 'menu_button sbpl-button' }),
+        );
+        panel.append(list, actions);
+        editorHost.append(panel);
+    }
+
+    function download(draft, payload) {
+        const text = JSON.stringify(withCanonicalName(draft.apiId, payload, draft.name), null, 4);
+        const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+        const link = element('a', { attributes: { href: url, download: `${draft.name.replace(/[^\w.-]+/g, '_')}.json` } });
+        link.click();
+        URL.revokeObjectURL(url);
+        status.textContent = `Exported "${draft.name}". It can be imported here or by SillyBunny itself.`;
+    }
+
+    async function importFile(file) {
+        const text = await file.text();
+        const payload = JSON.parse(text);
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+            throw new Error('That file does not hold a preset.');
+        }
+        const draft = createDraft({
+            apiId: guessApiId(payload),
+            name: String(payload.name || file.name.replace(/\.json$/i, '')),
+            payload,
+        });
+        await storage.saveDraft(draft);
+        editing = draft;
+        expanded = '';
+        status.textContent = `Imported "${draft.name}" as a draft. Check the kind is right, then publish it.`;
+        await reload();
+    }
+
+    function renderAll() {
+        renderLibrary();
+        renderEditor();
+    }
+
+    function build() {
+        root = element('div', { className: 'sbpl-presets-tab' });
+
+        const controls = element('div', { className: 'sbpl-controls' });
+        searchInput = element('input', {
+            className: 'text_pole sbpl-input',
+            attributes: { type: 'search', placeholder: 'Search presets', 'aria-label': 'Search presets' },
+        });
+        searchInput.addEventListener('input', renderLibrary);
+        typeSelect = element('select', {
+            className: 'text_pole sbpl-select',
+            attributes: { 'aria-label': 'Preset type' },
+        });
+        typeSelect.append(element('option', { text: 'Every kind', attributes: { value: '' } }));
+        for (const apiId of PRESET_API_IDS) {
+            typeSelect.append(element('option', { text: labelForApiId(apiId), attributes: { value: apiId } }));
+        }
+        typeSelect.addEventListener('change', renderLibrary);
+
+        const fileInput = element('input', {
+            className: 'sbpl-file-input',
+            attributes: { type: 'file', accept: 'application/json,.json', 'aria-label': 'Preset file to import' },
+        });
+        fileInput.addEventListener('change', () => {
+            const file = fileInput.files?.[0];
+            if (file) {
+                void importFile(file)
+                    .catch((error) => { status.textContent = errorMessage(error); })
+                    .finally(() => { fileInput.value = ''; });
+            }
+        });
+
+        controls.append(
+            searchInput,
+            typeSelect,
+            button('New draft', async () => {
+                const draft = createDraft({
+                    apiId: typeSelect.value || 'openai',
+                    name: `Draft ${drafts.length + 1}`,
+                    payload: blankPayload(typeSelect.value || 'openai', `Draft ${drafts.length + 1}`),
+                });
+                await storage.saveDraft(draft);
+                editing = draft;
+                expanded = '';
+                await reload();
+            }, { className: 'menu_button menu_button_primary sbpl-button' }),
+        );
+
+        status = statusRegion('');
+        reloadHost = element('div', { className: 'sbpl-reload-host' });
+        libraryHost = element('div', { className: 'sbpl-preset-library' });
+        editorHost = element('div', { className: 'sbpl-editor-host' });
+        root.append(controls, field('Import a preset file', fileInput), status, reloadHost, libraryHost, editorHost);
+        return root;
+    }
+
+    return {
+        render() {
+            if (!root) {
+                build();
+                void reload().catch((error) => {
+                    status.textContent = `Saved drafts could not be loaded: ${errorMessage(error)}`;
+                });
+            }
+            return root;
+        },
+        refresh() {
+            void reload().catch(() => {});
+        },
+        dispose() {
+            root?.remove();
+            root = null;
+        },
+    };
+}
+
+/**
+ * Works out which kind of preset a file holds from the settings it carries.
+ * The kind can still be corrected in the editor.
+ */
+export function guessApiId(payload) {
+    if (payload.prompts || payload.prompt_order || payload.chat_completion_source) {
+        return 'openai';
+    }
+    if (payload.story_string !== undefined) {
+        return 'context';
+    }
+    if (payload.input_sequence !== undefined || payload.output_sequence !== undefined) {
+        return 'instruct';
+    }
+    if (payload.post_history !== undefined || (payload.content !== undefined && payload.prefix === undefined)) {
+        return 'sysprompt';
+    }
+    if (payload.prefix !== undefined && payload.suffix !== undefined) {
+        return 'reasoning';
+    }
+    return 'textgenerationwebui';
+}

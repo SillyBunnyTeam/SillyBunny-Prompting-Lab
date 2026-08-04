@@ -1,7 +1,8 @@
-import { applyCase, getPresetName, getSelectedProfileId, hasUnsavedPresetEdits, findCharacterIndex, normalizeApiId, resolveProfile, restoreState, snapshotState, willCreateChatFile } from './apply-state.js';
+import { PRESET_API_IDS, applyCase, getPresetName, getSelectedProfileId, hasUnsavedPresetEdits, findCharacterIndex, normalizeApiId, presetRefs, resolveProfile, restoreState, snapshotState, willCreateChatFile } from './apply-state.js';
 import { captureOnce } from './capture.js';
 import { CAVEAT, STATUS } from './constants.js';
-import { ctxOf, getContext } from './host.js';
+import { ctxOf, getContext, listInstalledPresets } from './host.js';
+import { labelForApiId } from './presets.js';
 import { createRun, newId, resolveStatus } from './schema.js';
 
 /**
@@ -35,6 +36,13 @@ export function orderCasesByCharacter(cases) {
     return [...groups.values()].flat();
 }
 
+/** Pinned presets SillyBunny does not have, described in plain language. */
+function missingPresets(context, testCase) {
+    return presetRefs(testCase?.pins)
+        .filter(ref => !listInstalledPresets(ref.apiId, ctxOf(context)).includes(ref.name))
+        .map(ref => `the ${labelForApiId(ref.apiId).toLowerCase()} preset "${ref.name}"`);
+}
+
 /**
  * Checks a set of cases before anything is changed, so the user can be told
  * what will happen and what cannot run.
@@ -55,6 +63,15 @@ export async function preflight(cases, {
         }
         if (findCharacterIndex(context, avatar) < 0) {
             blocked.push({ caseId: testCase?.id, caseName: testCase?.name ?? '', reason: `The character "${avatar}" is not installed any more.` });
+            continue;
+        }
+        const missing = missingPresets(context, testCase);
+        if (missing.length) {
+            blocked.push({
+                caseId: testCase?.id,
+                caseName: testCase?.name ?? '',
+                reason: `SillyBunny does not have ${missing.join(' or ')}. Install the preset, then reload SillyBunny.`,
+            });
             continue;
         }
         if (!seenAvatars.has(avatar)) {
@@ -83,18 +100,44 @@ function describeError(error) {
     };
 }
 
-function readEnvironment(hostRef, capture, integrations) {
+/** The model actually in use, asked of the settings that belong to this mode. */
+function readModel(context, apiType) {
+    if (apiType === 'tc') {
+        return String(context?.textCompletionSettings?.custom_model || context?.onlineStatus || '');
+    }
+    return String(context?.chatCompletionSettings?.openai_model ?? context?.getChatCompletionModel?.() ?? '');
+}
+
+/**
+ * Records the preset behind every manager this run could have used, so a later
+ * comparison can say which piece of the configuration changed.
+ */
+function readPresets(hostRef, testCase) {
+    const pinned = new Map(presetRefs(testCase?.pins).map(ref => [ref.apiId, ref]));
+    const list = [];
+    for (const apiId of PRESET_API_IDS) {
+        const name = getPresetName(hostRef, apiId);
+        if (name) {
+            list.push({ apiId, name, pinned: pinned.has(apiId) });
+        }
+    }
+    return list;
+}
+
+function readEnvironment(hostRef, capture, integrations, testCase) {
     // Resolved after the case has been applied, so these describe what was
     // actually measured rather than what was configured beforehand.
     const context = ctxOf(hostRef);
     const characterIndex = context?.characterId;
+    const apiType = capture?.apiType ?? 'cc';
     return {
         forkVersion: String(globalThis.CLIENT_VERSION ?? context?.clientVersion ?? ''),
-        apiType: capture?.apiType ?? 'cc',
+        apiType,
         api: String(context?.mainApi ?? ''),
-        model: String(context?.chatCompletionSettings?.openai_model ?? context?.getChatCompletionModel?.() ?? ''),
+        model: readModel(context, apiType),
         profileName: resolveProfile(hostRef, getSelectedProfileId(hostRef))?.name ?? '',
         presetName: getPresetName(hostRef, normalizeApiId(hostRef)),
+        presets: readPresets(hostRef, testCase),
         personaName: String(context?.name1 ?? ''),
         characterName: String(context?.characters?.[characterIndex]?.name ?? ''),
         promptTagsProfile: integrations?.promptTags ?? null,
@@ -148,7 +191,7 @@ export async function runCase(testCase, {
             ...base,
             status: STATUS.PASS,
             durationMs: Date.now() - startedMs,
-            environment: readEnvironment(context, first, integrations),
+            environment: readEnvironment(context, first, integrations, testCase),
             capture: {
                 messages: first.messages,
                 combinedPrompt: first.combinedPrompt,

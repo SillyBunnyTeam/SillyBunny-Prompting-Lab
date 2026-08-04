@@ -36,8 +36,8 @@ test('the wand item opens the extensions surface and reveals the workbench', asy
 test('the workbench exposes every tab and marks one as selected', async ({ page }) => {
     await page.locator('#sbpl-menu-item').click();
     const tabs = page.locator('#sbpl-workbench .sbpl-tab');
-    await expect(tabs).toHaveCount(5);
-    await expect(tabs).toHaveText(['Tests', 'Run tests', 'Compare runs', 'Compare models', 'Settings']);
+    await expect(tabs).toHaveCount(6);
+    await expect(tabs).toHaveText(['Tests', 'Presets', 'Run tests', 'Compare runs', 'Compare models', 'Settings']);
     await expect(page.locator('.sbpl-tab[aria-selected="true"]')).toHaveCount(1);
 });
 
@@ -45,7 +45,7 @@ test('tabs can be changed with the keyboard', async ({ page }) => {
     await page.locator('#sbpl-menu-item').click();
     await page.locator('#sbpl-tab-cases').focus();
     await page.keyboard.press('ArrowRight');
-    await expect(page.locator('#sbpl-tab-run')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#sbpl-tab-presets')).toHaveAttribute('aria-selected', 'true');
     await page.keyboard.press('End');
     await expect(page.locator('#sbpl-tab-settings')).toHaveAttribute('aria-selected', 'true');
     await page.keyboard.press('Home');

@@ -5,10 +5,11 @@ export const EMBED_KEY = 'SillyBunnyPromptingLab';
 export const DB_NAME = 'SillyBunnyPromptingLab';
 
 export const EXPORT_FORMAT = 'sillybunny-prompting-lab';
-export const EXPORT_VERSION = 1;
+export const EXPORT_VERSION = 2;
 
 export const SETTINGS_VERSION = 1;
-export const CASE_VERSION = 1;
+export const CASE_VERSION = 2;
+export const DRAFT_VERSION = 1;
 export const SUITE_VERSION = 1;
 export const RUN_VERSION = 1;
 export const EMBED_VERSION = 1;
@@ -17,12 +18,14 @@ export const STORE_PREFIX = Object.freeze({
     SUITE: 'suite:',
     CASE: 'case:',
     RUN: 'run:',
+    DRAFT: 'draft:',
 });
 
 export const INDEX_KEY = Object.freeze({
     SUITES: 'index:suites',
     CASES: 'index:cases',
     RUNS: 'index:runs:',
+    DRAFTS: 'index:drafts',
 });
 
 /** Status of a single case within a run. */
@@ -115,6 +118,7 @@ export const CAVEAT_TEXT = Object.freeze({
 
 export const TAB = Object.freeze({
     CASES: 'cases',
+    PRESETS: 'presets',
     RUN: 'run',
     DIFF: 'diff',
     AB: 'ab',
@@ -123,6 +127,7 @@ export const TAB = Object.freeze({
 
 export const TAB_LABEL = Object.freeze({
     [TAB.CASES]: 'Tests',
+    [TAB.PRESETS]: 'Presets',
     [TAB.RUN]: 'Run tests',
     [TAB.DIFF]: 'Compare runs',
     [TAB.AB]: 'Compare models',

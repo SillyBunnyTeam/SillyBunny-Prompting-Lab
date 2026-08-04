@@ -3,6 +3,7 @@ import { element } from '../dom.js';
 import { createAbTab } from './ab-tab.js';
 import { createCasesTab } from './cases-tab.js';
 import { createDiffTab } from './diff-tab.js';
+import { createPresetsTab } from './presets-tab.js';
 import { createRunTab } from './run-tab.js';
 import { createSettingsTab } from './settings-tab.js';
 import { createWorkbench } from './workbench.js';
@@ -88,10 +89,18 @@ export function mountRuntimeUi({ signal = null } = {}) {
     });
     const casesTab = createCasesTab({
         onChanged: () => runTab.refresh(),
+        onQuickRun: (testCase) => {
+            workbench.showTab(TAB.RUN);
+            runTab.runOne(testCase);
+        },
+    });
+    const presetsTab = createPresetsTab({
+        onChanged: () => casesTab.refresh(),
     });
     const diffTab = createDiffTab();
     const abTab = createAbTab();
     workbench.registerTab(TAB.CASES, casesTab);
+    workbench.registerTab(TAB.PRESETS, presetsTab);
     workbench.registerTab(TAB.RUN, runTab);
     workbench.registerTab(TAB.DIFF, diffTab);
     const settingsTab = createSettingsTab({

@@ -1,5 +1,5 @@
 import { DB_NAME, INDEX_KEY, STORE_PREFIX } from './constants.js';
-import { migrateCase, migrateRun, migrateSuite, normalizeCase, normalizeRun, normalizeSuite } from './schema.js';
+import { migrateCase, migrateDraft, migrateRun, migrateSuite, normalizeCase, normalizeDraft, normalizeRun, normalizeSuite } from './schema.js';
 
 /**
  * Test cases, suites and run records live in IndexedDB rather than in
@@ -79,6 +79,31 @@ async function removeFromIndex(key, id) {
     if (next.length !== index.length) {
         await writeIndex(key, next);
     }
+}
+
+/* -------------------------------------------------------- preset drafts */
+
+export async function saveDraft(draft) {
+    const normalized = normalizeDraft({ ...draft, updatedAt: new Date().toISOString() });
+    await getStore().setItem(`${STORE_PREFIX.DRAFT}${normalized.id}`, normalized);
+    await addToIndex(INDEX_KEY.DRAFTS, normalized.id);
+    return normalized;
+}
+
+export async function getDraft(id) {
+    const value = await getStore().getItem(`${STORE_PREFIX.DRAFT}${id}`);
+    return value ? migrateDraft(value) : null;
+}
+
+export async function listDrafts() {
+    const ids = await readIndex(INDEX_KEY.DRAFTS);
+    const drafts = await Promise.all(ids.map(id => getDraft(id)));
+    return drafts.filter(Boolean);
+}
+
+export async function deleteDraft(id) {
+    await getStore().removeItem(`${STORE_PREFIX.DRAFT}${id}`);
+    await removeFromIndex(INDEX_KEY.DRAFTS, id);
 }
 
 /* ---------------------------------------------------------- test cases */

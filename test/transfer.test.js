@@ -5,8 +5,8 @@ import { installStubContext, removeStubContext } from './helpers/stub-context.js
 
 installStubContext();
 
-const { EXPORT_FORMAT } = await import('../src/constants.js');
-const { createCase, createSuite } = await import('../src/schema.js');
+const { EXPORT_FORMAT, EXPORT_VERSION } = await import('../src/constants.js');
+const { createCase, createDraft, createSuite } = await import('../src/schema.js');
 const { KIND, buildExport, formatSize, parseImport, suggestedFileName } = await import('../src/transfer.js');
 const {
     PRIVACY_NOTICE,
@@ -38,10 +38,23 @@ test('an exported suite carries its cases and identifies itself', () => {
     const { text, kind } = buildExport(suite, cases);
     const payload = JSON.parse(text);
     assert.equal(payload.format, EXPORT_FORMAT);
-    assert.equal(payload.version, 1);
+    assert.equal(payload.version, EXPORT_VERSION);
     assert.equal(kind, KIND.SUITE);
     assert.equal(payload.cases.length, 1);
     assert.equal(payload.suite.name, 'My suite');
+});
+
+test('presets travel with the suite and arrive as fresh drafts', () => {
+    const { suite, cases } = sampleSuite();
+    const draft = createDraft({ apiId: 'openai', name: 'Deep', payload: { prompts: [] } });
+    const payload = JSON.parse(buildExport(suite, cases, null, [draft]).text);
+    assert.equal(payload.presets.length, 1);
+
+    const imported = parseImport(JSON.stringify(payload));
+    assert.equal(imported.presets.length, 1);
+    assert.equal(imported.presets[0].name, 'Deep');
+    assert.notEqual(imported.presets[0].id, draft.id);
+    assert.equal(imported.presets[0].publishedAs, '');
 });
 
 test('exporting without results drops baseline pointers that would dangle', () => {

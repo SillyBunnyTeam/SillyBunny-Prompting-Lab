@@ -135,6 +135,127 @@ export async function countTokens(text) {
     }
 }
 
+/**
+ * Sends a JSON request to SillyBunny's own API with its request headers.
+ *
+ * The security token can expire while the page is open. SillyBunny refreshes
+ * it from script.js, so one retry is attempted before giving up.
+ */
+export async function requestJson(url, body) {
+    const context = getContext();
+    const send = async () => fetch(url, {
+        method: 'POST',
+        headers: context?.getRequestHeaders?.() ?? { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    let response = await send();
+    if (response.status === 403) {
+        try {
+            const script = await import('/script.js');
+            await script.refreshCsrfToken?.();
+            response = await send();
+        } catch {
+            // Keep the original response so the caller reports the real problem.
+        }
+    }
+    if (!response.ok) {
+        throw new Error(`SillyBunny refused the request (${response.status}).`);
+    }
+    const text = await response.text();
+    return text ? JSON.parse(text) : {};
+}
+
+function parseMaybeJson(value) {
+    if (typeof value !== 'string') {
+        return value ?? null;
+    }
+    try {
+        return JSON.parse(value);
+    } catch {
+        return null;
+    }
+}
+
+function pairUp(payloads, names) {
+    const list = [];
+    for (let index = 0; index < names.length; index += 1) {
+        const payload = parseMaybeJson(payloads[index]);
+        if (payload && typeof payload === 'object') {
+            list.push({ name: String(names[index]), payload });
+        }
+    }
+    return list;
+}
+
+/**
+ * Reads every installed preset straight from SillyBunny's own settings
+ * endpoint. This is the only way to see what is actually saved on disk, which
+ * is what publishing has to check against.
+ */
+export async function readPresetCatalog() {
+    const data = await requestJson('/api/settings/get', {});
+    return {
+        openai: pairUp(data.openai_settings ?? [], data.openai_setting_names ?? []),
+        textgenerationwebui: pairUp(data.textgenerationwebui_presets ?? [], data.textgenerationwebui_preset_names ?? []),
+        context: namedList(data.context),
+        instruct: namedList(data.instruct),
+        sysprompt: namedList(data.sysprompt),
+        reasoning: namedList(data.reasoning),
+    };
+}
+
+function namedList(entries) {
+    return (Array.isArray(entries) ? entries : [])
+        .filter(entry => entry && typeof entry === 'object' && entry.name)
+        .map(entry => ({ name: String(entry.name), payload: entry }));
+}
+
+/**
+ * Lists the preset names SillyBunny currently has loaded for one API.
+ */
+export function listInstalledPresets(apiId, source = getContext) {
+    const manager = ctxOf(source).getPresetManager?.(apiId);
+    const names = manager?.getAllPresets?.() ?? [];
+    return Array.isArray(names) ? names.map(String) : [];
+}
+
+/**
+ * Copies one installed preset. The host hands back its live object, so it is
+ * cloned immediately: editing it in place would rewrite SillyBunny's settings.
+ */
+export function readInstalledPreset(apiId, name, source = getContext) {
+    const manager = ctxOf(source).getPresetManager?.(apiId);
+    const payload = manager?.getCompletionPresetByName?.(name);
+    if (!payload || typeof payload !== 'object') {
+        return null;
+    }
+    return structuredClone(payload);
+}
+
+/**
+ * Saves a draft to SillyBunny as a brand new preset.
+ *
+ * Nothing is overwritten: the name is checked against the files on disk first,
+ * and the caller is expected to ask the user to reload afterwards, because
+ * SillyBunny only reads its preset lists while starting up.
+ */
+export async function publishPreset(apiId, name, payload) {
+    const catalog = await readPresetCatalog();
+    const taken = (catalog[apiId] ?? []).some(entry => entry.name.toLowerCase() === name.toLowerCase());
+    if (taken) {
+        throw new Error(`SillyBunny already has a ${apiId} preset called "${name}". Choose another name.`);
+    }
+    if (apiId === 'openai') {
+        const context = getContext();
+        await context?.eventSource?.emit?.(
+            context?.eventTypes?.OAI_PRESET_IMPORT_READY ?? 'oai_preset_import_ready',
+            { data: payload, presetName: name },
+        );
+    }
+    const result = await requestJson('/api/presets/save', { name, apiId, preset: payload });
+    return String(result?.name || name);
+}
+
 export function notify(level, message) {
     const method = globalThis.toastr?.[level];
     if (typeof method === 'function') {

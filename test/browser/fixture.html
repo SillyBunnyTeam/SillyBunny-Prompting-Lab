@@ -100,6 +100,44 @@
             },
         };
 
+        // One manager per preset kind, the way the host registers them, so the
+        // workshop can tell a Chat Completion preset from a template.
+        const installedPresets = {
+            openai: {
+                Default: { prompts: [{ identifier: 'main', name: 'Main', role: 'system', content: 'Be helpful.' }], prompt_order: [{ character_id: 100001, order: [{ identifier: 'main', enabled: true }] }] },
+                Deep: { prompts: [], prompt_order: [] },
+            },
+            textgenerationwebui: { Simple: { temp: 1 } },
+            context: { Story: { name: 'Story', story_string: '{{description}}' } },
+            instruct: { ChatML: { name: 'ChatML', input_sequence: '<|im_start|>' } },
+            sysprompt: { Neutral: { name: 'Neutral', content: 'Write well.' } },
+            reasoning: { DeepSeek: { name: 'DeepSeek', prefix: '<think>', suffix: '</think>' } },
+        };
+        const savedPresets = [];
+
+        const originalFetch = globalThis.fetch.bind(globalThis);
+        globalThis.fetch = async (resource, init) => {
+            const url = String(resource);
+            if (url.endsWith('/api/settings/get')) {
+                return new Response(JSON.stringify({
+                    openai_settings: Object.values(installedPresets.openai).map(p => JSON.stringify(p)),
+                    openai_setting_names: Object.keys(installedPresets.openai),
+                    textgenerationwebui_presets: Object.values(installedPresets.textgenerationwebui).map(p => JSON.stringify(p)),
+                    textgenerationwebui_preset_names: Object.keys(installedPresets.textgenerationwebui),
+                    context: Object.values(installedPresets.context),
+                    instruct: Object.values(installedPresets.instruct),
+                    sysprompt: Object.values(installedPresets.sysprompt),
+                    reasoning: Object.values(installedPresets.reasoning),
+                }), { headers: { 'Content-Type': 'application/json' } });
+            }
+            if (url.endsWith('/api/presets/save')) {
+                const body = JSON.parse(String(init?.body ?? '{}'));
+                savedPresets.push(body);
+                return new Response(JSON.stringify({ name: body.name }), { headers: { 'Content-Type': 'application/json' } });
+            }
+            return originalFetch(resource, init);
+        };
+
         const context = {
             characterId: 0,
             characters: [{ avatar: 'tester.png', name: 'Tester', data: { extensions: {} } }],
@@ -112,12 +150,17 @@
             powerUserSettings: { personas: {} },
             getTokenCountAsync: async text => Math.ceil(String(text).length / 4),
             saveSettingsDebounced: () => {},
-            getPresetManager: () => ({
-                getAllPresets: () => ['Default', 'Deep'],
-                getSelectedPresetName: () => 'Default',
-                findPreset: name => `value:${name}`,
-                selectPreset: async () => {},
-            }),
+            getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
+            getPresetManager: (apiId = 'openai') => {
+                const presets = installedPresets[apiId] ?? {};
+                return {
+                    getAllPresets: () => Object.keys(presets),
+                    getSelectedPresetName: () => Object.keys(presets)[0] ?? '',
+                    findPreset: name => (name in presets ? `value:${name}` : undefined),
+                    selectPreset: async () => {},
+                    getCompletionPresetByName: name => presets[name],
+                };
+            },
             getCharacterCardFields: () => ({}),
             writeExtensionField: async (index, key, value) => {
                 context.characters[index].data ??= {};
@@ -154,6 +197,7 @@
             fallbackClicks,
         });
         globalThis.fixtureCloseShell = () => { shellPanel.hidden = true; };
+        globalThis.fixtureGetSavedPresets = () => structuredClone(savedPresets);
         globalThis.fixtureRemoveShellApi = () => { delete globalThis.SillyBunnyShell; };
         // mountRuntimeUi returns the already-mounted controller, so the test can
         // drive the same availability path the extension uses after loadHost().

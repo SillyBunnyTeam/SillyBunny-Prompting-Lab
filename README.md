@@ -59,13 +59,21 @@ Each run also lists what a test cannot reproduce. A test build skips extensions 
 history at the last moment, such as vector storage and summaries, so a real reply may contain
 content a test does not show. These notes appear on the run itself rather than in the manual.
 
-## The five tabs
+## The six tabs
 
 ### Tests
 
 A test case is one character and its prompt settings. A suite is a group of test cases that run
 together. Every setting is chosen from what you actually have installed, so a test cannot name a
 character or preset that is not there.
+
+A test case can pin a Chat Completion preset, or any of the five Text Completion pieces: the
+sampler preset, the context template, the instruct template, the system prompt, and the reasoning
+template. It cannot pin both kinds at once, because only one of them builds the prompt.
+
+The search box filters by name, note, tag, character, or preset. Cases can be duplicated, tagged or
+deleted in bulk, and run one at a time. **Generate combinations** builds one case per character and
+preset pairing, so a whole matrix can be made in one step.
 
 Each test case can carry checks:
 
@@ -77,6 +85,24 @@ Each test case can carry checks:
 
 A check that cannot be made, such as a lorebook check on a run with no lorebook activity, is
 reported as unchecked rather than counted as a pass or a failure.
+
+### Presets
+
+A workshop for the presets your tests use. It lists what SillyBunny has installed and the drafts
+you are working on.
+
+Installed presets are read only. Copy one into a draft, or start a draft from nothing, and edit it
+without touching the preset you rely on. A Chat Completion draft shows its prompt modules: you can
+turn one off, move it, change its role or text, add or duplicate one, and see what each costs in
+tokens. The Text Completion kinds get the fields that matter to them. Every setting a preset holds,
+including the ones without their own control, can be edited as text.
+
+When a draft is ready, **Publish to SillyBunny** saves it as a new preset. It never overwrites,
+renames, or deletes an installed preset, and it never changes the preset you have selected. Renaming
+and deleting installed presets stays in SillyBunny's own preset menu. SillyBunny reads its preset
+lists while starting, so the workshop offers a reload when you publish.
+
+A draft says so when the preset it was copied from has changed or been uninstalled since.
 
 ### Run tests
 
@@ -111,7 +137,11 @@ and saving test cases inside a character card.
 ## Sharing tests
 
 Export a suite to a file to move it to another installation or send it to someone else. You can
-export with or without baseline runs.
+export with or without baseline runs, and with or without the presets the tests use.
+
+Preset settings that describe where your requests go, such as a proxy address or a password, are
+left out unless you tick them yourself. Imported presets arrive as drafts on the Presets tab, so
+nothing is installed behind your back.
 
 Test cases can also be saved inside a character card, so they travel with the card. Only the test
 definitions are stored, never runs, and Prompting Lab tells you what will travel before it

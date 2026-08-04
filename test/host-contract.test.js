@@ -203,6 +203,65 @@ test('SillyBunny exposes the host contracts used by Prompting Lab', {
         assert.match(presetManager, /this\._dirty\s*=\s*dirty/);
     });
 
+    await test('the preset workshop can read and publish presets', async () => {
+        const [presetEndpoint, settingsEndpoint] = await Promise.all([
+            readFile(path.join(hostRoot, 'src/endpoints/presets.js'), 'utf8'),
+            readFile(path.join(hostRoot, 'src/endpoints/settings.js'), 'utf8'),
+        ]);
+
+        // Publishing a draft posts to this route with these three fields.
+        assert.match(presetEndpoint, /router\.post\('\/save'/);
+        assert.match(presetEndpoint, /sanitize\(request\.body\.name\)/);
+        assert.match(presetEndpoint, /request\.body\.preset/);
+        assert.match(presetEndpoint, /request\.body\.apiId/);
+        assert.match(presetEndpoint, /response\.send\(\{\s*name\s*\}\)/);
+
+        // The workshop reads the installed catalogue from this route, so the
+        // six lists it splits apart have to keep their names and shapes.
+        assert.match(settingsEndpoint, /router\.post\('\/get'/);
+        for (const key of [
+            'openai_settings',
+            'openai_setting_names',
+            'textgenerationwebui_presets',
+            'textgenerationwebui_preset_names',
+            'instruct',
+            'context',
+            'sysprompt',
+            'reasoning',
+        ]) {
+            assert.match(settingsEndpoint, new RegExp(`\\b${key}\\b`), `${key} is missing from the settings payload`);
+        }
+
+        // A stale token has to be refreshable, otherwise publishing fails
+        // after a long editing session.
+        assert.match(script, exportPattern('refreshCsrfToken'));
+        assert.match(context, /\bgetRequestHeaders\b/);
+
+        // Reading an installed preset without touching live settings.
+        assert.match(presetManager, /getCompletionPresetByName\s*\(/);
+        assert.match(presetManager, /getAllPresets\s*\(/);
+        assert.match(presetManager, /findPreset\s*\(/);
+        assert.match(presetManager, /getSelectedPresetName\s*\(/);
+
+        // Native chat completion imports announce themselves, so anything
+        // listening for a new preset still hears the Lab's publish.
+        assert.match(events, /OAI_PRESET_IMPORT_READY/);
+        assert.match(openai, /event_types\.OAI_PRESET_IMPORT_READY/);
+    });
+
+    await test('prompt editors can borrow the host macro and fullscreen helpers', async () => {
+        const chats = await readFile(path.join(hostRoot, 'public/scripts/chats.js'), 'utf8');
+        const macros = await readFile(path.join(hostRoot, 'public/scripts/autocomplete/MacroAutoComplete.js'), 'utf8');
+
+        // A textarea gains macro completion by carrying these attributes.
+        assert.match(macros, /data-macros/);
+        assert.match(macros, /data-macros-autocomplete/);
+
+        // The large editor is delegated, so a button added later still works.
+        assert.match(chats, /\.editor_maximize/);
+        assert.match(chats, /data-for/);
+    });
+
     await test('the extension settings host elements exist', () => {
         assert.match(indexHtml, /id="extensions_settings2"/);
         assert.match(indexHtml, /id="extensions-settings-button"/);

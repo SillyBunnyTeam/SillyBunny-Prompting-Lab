@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ASSERTION, MAX_REGEX_LENGTH, STATUS } from '../src/constants.js';
+import { ASSERTION, CASE_VERSION, MAX_REGEX_LENGTH, STATUS } from '../src/constants.js';
 import {
     createCase,
     createSuite,
@@ -27,7 +27,7 @@ test('newId returns distinct identifiers', () => {
 
 test('createCase produces a valid, normalized case', () => {
     const testCase = createCase({ name: 'Aqua greeting' });
-    assert.equal(testCase.v, 1);
+    assert.equal(testCase.v, CASE_VERSION);
     assert.equal(testCase.name, 'Aqua greeting');
     assert.deepEqual(testCase.assertions, []);
     assert.equal(testCase.pins.macroEnhanced, 'record');
@@ -44,7 +44,7 @@ test('normalizePins keeps identifiers and drops empty optional pins', () => {
         macroEnhanced: 'off',
     });
     assert.equal(pins.characterAvatar, 'aqua.png');
-    assert.deepEqual(pins.preset, { apiId: 'openai', name: 'Deep' });
+    assert.deepEqual(pins.presets, [{ apiId: 'openai', name: 'Deep' }]);
     assert.equal(pins.promptTags, null);
     assert.equal(pins.personaKey, null);
     assert.equal(pins.macroEnhanced, 'off');
@@ -53,7 +53,7 @@ test('normalizePins keeps identifiers and drops empty optional pins', () => {
 test('normalizePins tolerates junk input', () => {
     const pins = normalizePins(null);
     assert.equal(pins.characterAvatar, '');
-    assert.equal(pins.preset, null);
+    assert.deepEqual(pins.presets, []);
     assert.equal(pins.macroEnhanced, 'record');
 });
 
@@ -158,7 +158,7 @@ test('migrations refuse objects written by a newer version', () => {
 
 test('migrations accept unversioned legacy objects', () => {
     const testCase = migrateCase({ name: 'Legacy', pins: { characterAvatar: 'a.png' } });
-    assert.equal(testCase.v, 1);
+    assert.equal(testCase.v, CASE_VERSION);
     assert.equal(testCase.name, 'Legacy');
 });
 

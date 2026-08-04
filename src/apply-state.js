@@ -1,5 +1,6 @@
 import { CAVEAT } from './constants.js';
 import { ctxOf, getContext } from './host.js';
+import { PRESET_API_IDS as WORKSHOP_API_IDS, describePresetRef } from './presets.js';
 
 /**
  * Applies a test case's pinned configuration, and puts the user's own
@@ -16,8 +17,13 @@ const SETTLE_TIMEOUT_MS = 5000;
 /** Reactions to CHAT_CHANGED are queued, not immediate; let them land. */
 const SETTLE_TICK_MS = 300;
 
-/** Preset managers that a connection profile can change behind our back. */
-export const PRESET_API_IDS = Object.freeze(['instruct', 'context', 'sysprompt', 'reasoning']);
+/**
+ * Preset managers a run can change behind the user's back, either because a
+ * connection profile carries them or because a test case pins them.
+ */
+export const PRESET_API_IDS = Object.freeze([
+    ...new Set(['instruct', 'context', 'sysprompt', 'reasoning', ...WORKSHOP_API_IDS]),
+]);
 
 export function quoteSlashArg(value) {
     return `"${String(value ?? '')
@@ -279,6 +285,34 @@ async function applyPromptTagsProfile(hostRef, promptTags, caveats) {
     await runSlash(hostRef, `/prompttags-profile ${quoteSlashArg(name)}`);
 }
 
+/** Reads a case's pinned presets, including the pre-v2 single-preset shape. */
+export function presetRefs(pins) {
+    const list = Array.isArray(pins?.presets) ? pins.presets : [];
+    const legacy = pins?.preset?.name ? [pins.preset] : [];
+    return [...list, ...legacy].filter(ref => ref?.name);
+}
+
+/**
+ * Applies every pinned preset and checks afterwards that each one really is
+ * selected. SillyBunny links some templates together (choosing a context
+ * template can pull in the instruct template of the same name), so a pin that
+ * was applied first can be replaced by a later one without any error.
+ */
+async function applyPresets(hostRef, refs) {
+    for (const ref of refs) {
+        const applied = await selectPreset(hostRef, ref.apiId, ref.name);
+        if (!applied) {
+            throw new Error(`This test case uses a preset that is not available any more (${describePresetRef(ref)}). Choose a different preset for the test case.`);
+        }
+    }
+    for (const ref of refs) {
+        const selected = getPresetName(hostRef, ref.apiId);
+        if (selected && selected !== ref.name) {
+            throw new Error(`SillyBunny replaced the pinned preset ${describePresetRef(ref)} with "${selected}" while applying the other presets in this test case. Templates that are linked to each other cannot be pinned separately.`);
+        }
+    }
+}
+
 /**
  * Applies one test case's pins. Throws when a pin cannot be honoured, so the
  * runner can record the case as unrunnable rather than measure the wrong thing.
@@ -292,12 +326,7 @@ export async function applyCase(hostRef = getContext, pins = null, { signal = nu
     await applyPersona(hostRef, pins?.personaKey);
     await applyProfile(hostRef, pins?.connectionProfileId);
     await applyPromptTagsProfile(hostRef, pins?.promptTags, caveats);
-    if (pins?.preset?.name) {
-        const applied = await selectPreset(hostRef, pins.preset.apiId, pins.preset.name);
-        if (!applied) {
-            throw new Error(`This test case uses a preset that is not available any more (${pins.preset.name}). Choose a different preset for the test case.`);
-        }
-    }
+    await applyPresets(hostRef, presetRefs(pins));
     return { caveats };
 }
 

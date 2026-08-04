@@ -45,7 +45,7 @@ test('a suite and a test case can be created and saved', async ({ page }) => {
     await expect(editor).toBeVisible();
 
     await editor.locator('select').first().selectOption('tester.png');
-    await editor.locator('textarea').fill('Tell me about the vault.');
+    await editor.getByRole('textbox', { name: 'Example message' }).fill('Tell me about the vault.');
     await panel.locator('button', { hasText: 'Save test case' }).click();
 
     await expect(panel).toContainText('Saved "Test case 1"');
@@ -66,9 +66,12 @@ test('checks can be added to a test case and read back', async ({ page }) => {
     await panel.getByRole('button', { name: 'Add test case' }).click();
     const adder = panel.locator('.sbpl-assertion-adder');
     await adder.locator('select').selectOption('token-ceiling');
-    await adder.locator('input').fill('1500');
     await adder.locator('button', { hasText: 'Add check' }).click();
-    await expect(panel.locator('.sbpl-assertion-item')).toContainText('under 1,500 tokens');
+    const check = panel.locator('.sbpl-assertion-item');
+    await expect(check).toContainText('under 1,000 tokens');
+    await check.locator('button', { hasText: 'Edit' }).click();
+    await check.locator('input[type="number"]').fill('1500');
+    await expect(check).toContainText('under 1,500 tokens');
 });
 
 test('the personas and profiles offered come from the host', async ({ page }) => {
@@ -92,6 +95,44 @@ test('a Prompt Tags profile can be pinned from the case editor', async ({ page }
     await panel.locator('button', { hasText: 'Save test case' }).click();
     await panel.locator('button', { hasText: 'Edit' }).click();
     await expect(panel.locator('.sbpl-editor select').nth(3)).toHaveValue('Tagged');
+});
+
+test('the presets tab lists what the host has installed', async ({ page }) => {
+    const panel = await openTab(page, 'presets');
+    await expect(panel).toContainText('Installed in SillyBunny');
+    await expect(panel).toContainText('Chat Completion');
+    await expect(panel).toContainText('Instruct template');
+    await expect(panel).toContainText('No drafts here yet');
+});
+
+test('an installed preset can be copied into a draft and edited module by module', async ({ page }) => {
+    const panel = await openTab(page, 'presets');
+    const installed = panel.locator('.sbpl-preset-item', { hasText: 'Default' }).first();
+    await installed.getByRole('button', { name: 'Copy to drafts' }).click();
+    await expect(panel).toContainText('Copied "Default" into your drafts.');
+
+    const editor = panel.locator('.sbpl-editor');
+    await expect(editor).toContainText('Prompt modules');
+    const module = editor.locator('.sbpl-module-item').first();
+    await expect(module).toContainText('Main');
+    await module.getByRole('button', { name: 'Edit' }).click();
+    await module.getByRole('textbox', { name: 'Text' }).fill('Be very helpful.');
+    await editor.getByRole('button', { name: 'Save draft' }).click();
+    await expect(panel).toContainText('Saved "Default (copy)"');
+});
+
+test('publishing a draft sends it to the host and asks for a reload', async ({ page }) => {
+    const panel = await openTab(page, 'presets');
+    const installed = panel.locator('.sbpl-preset-item', { hasText: 'Default' }).first();
+    await installed.getByRole('button', { name: 'Copy to drafts' }).click();
+    await panel.locator('.sbpl-editor').getByRole('button', { name: 'Publish to SillyBunny' }).click();
+
+    await expect(panel).toContainText('Published "Default (copy)"');
+    await expect(panel.getByRole('button', { name: 'Reload SillyBunny' })).toBeVisible();
+    const saved = await page.evaluate(() => globalThis.fixtureGetSavedPresets());
+    expect(saved).toHaveLength(1);
+    expect(saved[0].apiId).toBe('openai');
+    expect(saved[0].name).toBe('Default (copy)');
 });
 
 test('the run tab explains itself before any suite exists', async ({ page }) => {
@@ -149,7 +190,7 @@ test('an out-of-range setting is corrected rather than accepted', async ({ page 
 
 test('every tab keeps its content inside the panel on a narrow screen', async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 780 });
-    for (const tab of ['cases', 'run', 'diff', 'ab', 'settings']) {
+    for (const tab of ['cases', 'presets', 'run', 'diff', 'ab', 'settings']) {
         await openTab(page, tab);
         const overflows = await page.evaluate(
             () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
@@ -171,7 +212,7 @@ test('every tab is reachable and operable with the keyboard alone', async ({ pag
     await page.waitForFunction(() => globalThis.__ready === true);
     await page.locator('#sbpl-menu-item').click();
     await page.locator('#sbpl-tab-cases').focus();
-    for (const expected of ['run', 'diff', 'ab', 'settings']) {
+    for (const expected of ['presets', 'run', 'diff', 'ab', 'settings']) {
         await page.keyboard.press('ArrowRight');
         await expect(page.locator(`#sbpl-tab-${expected}`)).toHaveAttribute('aria-selected', 'true');
         await expect(page.locator(`#sbpl-tab-${expected}`)).toBeFocused();

@@ -194,6 +194,49 @@ test('applyCase explains a missing profile and a missing preset', async () => {
     );
 });
 
+test('applyCase applies every pinned Text Completion preset', async () => {
+    const context = makeHost({ presets: { context: 'Old', instruct: 'Old' } });
+    await applyCase(context, {
+        characterAvatar: 'aqua.png',
+        presets: [
+            { apiId: 'context', name: 'Story' },
+            { apiId: 'instruct', name: 'ChatML' },
+        ],
+    });
+    const applied = context.commands.filter(item => item.startsWith('preset:'));
+    assert.deepEqual(applied, ['preset:context:value:Story', 'preset:instruct:value:ChatML']);
+});
+
+test('applyCase refuses templates that overwrite each other', async () => {
+    const context = makeHost();
+    let bound = false;
+    const original = context.getPresetManager;
+    context.getPresetManager = (apiId) => {
+        const manager = original(apiId);
+        return {
+            ...manager,
+            // The host links context and instruct, so picking one replaces the other.
+            getSelectedPresetName: () => (bound && apiId === 'context' ? 'ChatML' : manager.getSelectedPresetName()),
+            async selectPreset(value) {
+                await manager.selectPreset(value);
+                if (apiId === 'instruct') {
+                    bound = true;
+                }
+            },
+        };
+    };
+    await assert.rejects(
+        () => applyCase(context, {
+            characterAvatar: 'aqua.png',
+            presets: [
+                { apiId: 'context', name: 'Story' },
+                { apiId: 'instruct', name: 'ChatML' },
+            ],
+        }),
+        /linked to each other/,
+    );
+});
+
 test('applyCase reports a missing Prompt Tags extension as a caveat, not a failure', async () => {
     const context = makeHost();
     const { caveats } = await applyCase(context, {

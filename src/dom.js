@@ -67,6 +67,50 @@ export function field(labelText, control, {
     return wrapper;
 }
 
+let promptFieldCount = 0;
+
+/**
+ * A text area wired into SillyBunny's own editing helpers: macro suggestions
+ * while typing and the large editor button the rest of the app uses.
+ * @returns {{wrapper: HTMLElement, textarea: HTMLTextAreaElement}}
+ */
+export function promptField(labelText, {
+    rows = 4,
+    hint = '',
+    macros = true,
+    className = 'sbpl-field sbpl-prompt-field',
+} = {}) {
+    promptFieldCount += 1;
+    const id = `sbpl-prompt-${promptFieldCount}`;
+    const textarea = element('textarea', {
+        className: 'text_pole sbpl-textarea',
+        id,
+        attributes: {
+            rows: String(rows),
+            ...(macros ? { 'data-macros': 'true', 'data-macros-autocomplete': 'always' } : {}),
+        },
+    });
+    const label = element('label', { className: 'sbpl-field-label', attributes: { for: id } });
+    label.textContent = labelText;
+    const head = element('div', { className: 'sbpl-prompt-head' });
+    head.append(label, element('div', {
+        className: 'editor_maximize sbpl-maximize',
+        attributes: {
+            'data-for': id,
+            title: 'Open in a large editor',
+            role: 'button',
+            tabindex: '0',
+            'aria-label': `Open ${labelText} in a large editor`,
+        },
+    }));
+    const wrapper = element('div', { className });
+    wrapper.append(head, textarea);
+    if (hint) {
+        wrapper.append(element('span', { className: 'sbpl-field-hint', text: hint }));
+    }
+    return { wrapper, textarea };
+}
+
 export function statusRegion(text = '') {
     return element('p', {
         className: 'sbpl-status',

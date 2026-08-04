@@ -305,6 +305,20 @@ test('preflight separates runnable cases from ones that cannot run', async () =>
     assert.match(report.blocked[1].reason, /No character is chosen/);
 });
 
+test('preflight blocks a case whose preset is not installed', async () => {
+    const context = makeContext();
+    context.getPresetManager = apiId => ({
+        getAllPresets: () => (apiId === 'openai' ? ['Default'] : []),
+    });
+    const testCase = createCase({
+        name: 'pinned',
+        pins: { characterAvatar: 'aqua.png', presets: [{ apiId: 'openai', name: 'Gone' }] },
+    });
+    const report = await preflight([testCase], { context });
+    assert.equal(report.runnable.length, 0);
+    assert.match(report.blocked[0].reason, /the chat completion preset "Gone"/i);
+});
+
 test('preflight accepts a chat-file checker and calls it once per avatar', async () => {
     const context = makeContext();
     let checks = 0;

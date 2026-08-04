@@ -1,7 +1,9 @@
 import { button, element, errorMessage, field, replace, statusRegion } from '../dom.js';
 import { adoptEmbeddedCases, findCharactersWithTests, PRIVACY_NOTICE, readEmbeddedCases, writeEmbeddedCases, embeddedSize } from '../embed.js';
-import { getContext } from '../host.js';
+import { getContext, readInstalledPreset } from '../host.js';
 import * as lab from '../lab.js';
+import { reviewConnectionFields, withoutFields } from '../presets.js';
+import { createDraft } from '../schema.js';
 import { getSettings, updateSettings } from '../settings.js';
 import * as storage from '../storage.js';
 import { buildExport, downloadExport, formatSize, parseImport, suggestedFileName } from '../transfer.js';
@@ -16,6 +18,8 @@ export function createSettingsTab({ onChanged = null } = {}) {
     let status = null;
     let embedHost = null;
     let fileInput = null;
+    let includePresetsInput = null;
+    let includeConnectionInput = null;
     let suites = [];
     let activeSuite = null;
 
@@ -49,27 +53,64 @@ export function createSettingsTab({ onChanged = null } = {}) {
                     }
                 }
             }
-            const { text, size, kind } = buildExport(activeSuite, cases, baselineRuns);
+            const presets = await collectPresets(cases);
+            const { text, size, kind } = buildExport(activeSuite, cases, baselineRuns, presets);
             downloadExport(suggestedFileName(activeSuite), text);
-            status.textContent = `Exported ${cases.length} test case${cases.length === 1 ? '' : 's'} (${formatSize(size)})${kind === 'suite-with-baselines' ? ', including baseline runs' : ''}.`;
+            status.textContent = `Exported ${cases.length} test case${cases.length === 1 ? '' : 's'} (${formatSize(size)})${kind === 'suite-with-baselines' ? ', including baseline runs' : ''}${presets.length ? `, with ${presets.length} preset${presets.length === 1 ? '' : 's'}` : ''}.`;
         } catch (error) {
             status.textContent = `The suite could not be exported: ${errorMessage(error)}`;
         }
     }
 
+    /**
+     * Copies the presets a suite depends on, so it still works elsewhere.
+     * Settings that say where requests go are left out unless the user asks
+     * for them, because they point at someone's private setup.
+     */
+    async function collectPresets(cases) {
+        if (!includePresetsInput?.checked) {
+            return [];
+        }
+        const wanted = new Map();
+        for (const testCase of cases) {
+            for (const ref of testCase.pins.presets) {
+                wanted.set(`${ref.apiId}:${ref.name}`, ref);
+            }
+        }
+        const presets = [];
+        for (const ref of wanted.values()) {
+            const payload = readInstalledPreset(ref.apiId, ref.name);
+            if (!payload) {
+                continue;
+            }
+            const fields = reviewConnectionFields(ref.apiId, payload);
+            presets.push(createDraft({
+                apiId: ref.apiId,
+                name: ref.name,
+                payload: includeConnectionInput?.checked
+                    ? payload
+                    : withoutFields(payload, fields.map(entry => entry.field)),
+            }));
+        }
+        return presets;
+    }
+
     async function importFile(file) {
         try {
             const text = await file.text();
-            const { suite, cases, baselineRuns } = parseImport(text);
+            const { suite, cases, baselineRuns, presets } = parseImport(text);
             for (const testCase of cases) {
                 await storage.saveCase(testCase);
             }
             for (const run of baselineRuns) {
                 await storage.saveRun(run);
             }
+            for (const draft of presets) {
+                await storage.saveDraft(draft);
+            }
             await storage.saveSuite(suite);
             activeSuite = suite;
-            status.textContent = `Imported "${suite.name}" with ${cases.length} test case${cases.length === 1 ? '' : 's'}${baselineRuns.length ? ' and its baseline runs' : ''}.`;
+            status.textContent = `Imported "${suite.name}" with ${cases.length} test case${cases.length === 1 ? '' : 's'}${baselineRuns.length ? ' and its baseline runs' : ''}${presets.length ? `. Its ${presets.length} preset${presets.length === 1 ? ' is' : 's are'} waiting on the Presets tab, ready to publish` : ''}.`;
             await reload();
             onChanged?.();
         } catch (error) {
@@ -196,6 +237,26 @@ export function createSettingsTab({ onChanged = null } = {}) {
             fileInput.value = '';
         });
 
+        includePresetsInput = element('input', { className: 'sbpl-checkbox', attributes: { type: 'checkbox' } });
+        includeConnectionInput = element('input', { className: 'sbpl-checkbox', attributes: { type: 'checkbox' } });
+        includeConnectionInput.disabled = true;
+        includePresetsInput.addEventListener('change', () => {
+            includeConnectionInput.disabled = !includePresetsInput.checked;
+            if (!includePresetsInput.checked) {
+                includeConnectionInput.checked = false;
+            }
+        });
+        const presetChoice = element('label', { className: 'sbpl-field sbpl-field-inline' });
+        presetChoice.append(includePresetsInput, element('span', {
+            className: 'sbpl-field-label',
+            text: 'Include the presets these tests use',
+        }));
+        const connectionChoice = element('label', { className: 'sbpl-field sbpl-field-inline' });
+        connectionChoice.append(includeConnectionInput, element('span', {
+            className: 'sbpl-field-label',
+            text: 'Also include proxy and endpoint settings',
+        }));
+
         const transfer = element('div', { className: 'sbpl-controls' });
         transfer.append(
             suiteSelect,
@@ -228,6 +289,8 @@ export function createSettingsTab({ onChanged = null } = {}) {
                 hint: 'Only needed for the caching check. Your server administrator sets this value; leave it empty to skip those checks.',
             }),
             element('p', { className: 'sbpl-field-label', text: 'Moving suites between installations' }),
+            presetChoice,
+            connectionChoice,
             transfer,
             field('Import a suite file', fileInput),
             embedHost,

@@ -2,9 +2,10 @@ import { evaluateAssertions } from './assertions.js';
 import { analyzeCache } from './cache-analyzer.js';
 import { compareRuns, findVolatileSpans } from './compare.js';
 import { CAVEAT, STATUS } from './constants.js';
-import { ctxOf, getContext, stringHash } from './host.js';
+import { ctxOf, getContext, listInstalledPresets, stringHash } from './host.js';
 import { collectIntegrations } from './integrations/index.js';
 import { listPromptTagsProfiles } from './integrations/prompttags.js';
+import { PRESET_API_IDS } from './presets.js';
 import { runSuite as runnerRunSuite, preflight, summarize } from './runner.js';
 import { createRun, resolveStatus } from './schema.js';
 import { getSettings } from './settings.js';
@@ -223,11 +224,9 @@ export function readAvailableOptions(context = getContext()) {
         .filter(profile => profile?.id)
         .map(profile => ({ id: profile.id, name: profile.name ?? profile.id, mode: profile.mode ?? '' }));
 
-    let presets = [];
-    try {
-        presets = context?.getPresetManager?.()?.getAllPresets?.() ?? [];
-    } catch {
-        presets = [];
+    const presets = {};
+    for (const apiId of PRESET_API_IDS) {
+        presets[apiId] = listInstalledPresets(apiId, context);
     }
 
     const promptTagsProfiles = listPromptTagsProfiles(context);

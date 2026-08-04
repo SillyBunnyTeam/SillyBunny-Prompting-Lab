@@ -5,7 +5,7 @@ import { installStubContext, removeStubContext } from './helpers/stub-context.js
 
 installStubContext();
 
-const { createCase, createSuite } = await import('../src/schema.js');
+const { createCase, createDraft, createSuite } = await import('../src/schema.js');
 const storage = await import('../src/storage.js');
 
 function reset() {
@@ -155,4 +155,20 @@ test('clearAll empties the store', async () => {
     await storage.clearAll();
     assert.deepEqual(await storage.listCases(), []);
     assert.deepEqual(await storage.listSuites(), []);
+});
+
+test('preset drafts round-trip and can be removed', async () => {
+    reset();
+    const draft = await storage.saveDraft(createDraft({
+        apiId: 'openai',
+        name: 'My preset',
+        payload: { prompts: [] },
+    }));
+    assert.ok(draft.updatedAt);
+    const loaded = await storage.getDraft(draft.id);
+    assert.equal(loaded.name, 'My preset');
+    assert.deepEqual((await storage.listDrafts()).map(item => item.id), [draft.id]);
+    await storage.deleteDraft(draft.id);
+    assert.equal(await storage.getDraft(draft.id), null);
+    assert.deepEqual(await storage.listDrafts(), []);
 });
