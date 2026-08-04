@@ -81,6 +81,42 @@ function extractWorldInfoPass(payload) {
         }));
 }
 
+/**
+ * Collects the unresolved text behind each prompt section.
+ *
+ * A captured prompt holds the result of a macro, not the macro itself, so the
+ * assembled text cannot say why a value moves. The preset's own prompts and the
+ * character card still carry the macro syntax, which is what makes it possible
+ * to name the macro responsible for a prompt that will not cache.
+ */
+export function collectSourceTexts(context) {
+    const sources = {};
+    for (const prompt of context?.chatCompletionSettings?.prompts ?? []) {
+        if (prompt?.identifier && typeof prompt.content === 'string') {
+            sources[prompt.identifier] = prompt.content;
+        }
+    }
+    try {
+        const fields = context?.getCharacterCardFields?.() ?? {};
+        const map = {
+            charDescription: fields.description,
+            charPersonality: fields.personality,
+            scenario: fields.scenario,
+            personaDescription: fields.persona,
+            dialogueExamples: fields.mesExamples,
+            jailbreak: fields.jailbreak,
+        };
+        for (const [id, value] of Object.entries(map)) {
+            if (typeof value === 'string' && value) {
+                sources[id] = `${sources[id] ?? ''}\n${value}`.trim();
+            }
+        }
+    } catch {
+        // Card fields are a bonus; a failure here must not stop a capture.
+    }
+    return sources;
+}
+
 /** Joins a MessageCollection (or single Message) down to plain text. */
 function nodeText(node) {
     if (!node) {
@@ -365,6 +401,7 @@ export async function captureOnce({ userMessage = '', context = getContext, host
         tokenTable,
         wiPasses: state.wiPasses,
         cacheScope: state.cacheScope,
+        sourceTexts: collectSourceTexts(live),
         caveats,
     };
 }

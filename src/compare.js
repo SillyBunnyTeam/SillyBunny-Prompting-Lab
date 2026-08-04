@@ -26,12 +26,34 @@ function sectionMap(run) {
  * random roll or a timestamp does not report itself as a regression.
  * Spans are matched as literal text and replaced with a stable placeholder.
  */
+function placeholderFor(span) {
+    return `⟨${span?.macro ? `macro:${span.macro}` : 'changes each time'}⟩`;
+}
+
 export function normalizeVolatile(text, spans = []) {
-    const source = String(text ?? '');
+    let source = String(text ?? '');
+
+    // Anchored masking first. A value that differs on every build cannot be
+    // matched by the text one run happened to produce, but the unchanged text
+    // around it can be, so mask whatever sits between those anchors.
+    for (const span of spans ?? []) {
+        const before = String(span?.anchorBefore ?? '');
+        const after = String(span?.anchorAfter ?? '');
+        if (!before && !after) {
+            continue;
+        }
+        const middle = before && after ? '[\\s\\S]*?' : '[\\s\\S]{0,200}?';
+        const pattern = new RegExp(
+            `${escapeRegExp(before)}(${middle})${escapeRegExp(after)}`,
+            'g',
+        );
+        source = source.replace(pattern, `${before}${placeholderFor(span)}${after}`);
+    }
+
     const labels = new Map();
     for (const span of spans ?? []) {
         if (span && typeof span.text === 'string' && span.text.length && !labels.has(span.text)) {
-            labels.set(span.text, `⟨${span.macro ? `macro:${span.macro}` : 'changes each time'}⟩`);
+            labels.set(span.text, placeholderFor(span));
         }
     }
     if (!labels.size) {
@@ -144,6 +166,8 @@ export function describeComparison({ changedSections, addedSections, removedSect
  * Anything that changes when nothing else did is by definition not fixed
  * content: a random roll, a timestamp, a counter.
  */
+export const ANCHOR_LENGTH = 24;
+
 export function findVolatileSpans(first, second) {
     if (!first || !second) {
         return [];
@@ -159,7 +183,16 @@ export function findVolatileSpans(first, second) {
         }
         const span = differingSpan(section.content, other.content);
         if (span) {
-            spans.push({ section: id, text: span.a, otherText: span.b });
+            // The value itself is different every run, so a later comparison
+            // cannot find it by its text. The unchanged text on either side is
+            // what stays put, so record that too and mask what sits between.
+            spans.push({
+                section: id,
+                text: span.a,
+                otherText: span.b,
+                anchorBefore: section.content.slice(Math.max(0, span.start - ANCHOR_LENGTH), span.start),
+                anchorAfter: section.content.slice(span.start + span.a.length, span.start + span.a.length + ANCHOR_LENGTH),
+            });
         }
     }
     return spans;

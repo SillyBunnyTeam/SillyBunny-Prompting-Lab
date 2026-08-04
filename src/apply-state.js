@@ -1,5 +1,5 @@
 import { CAVEAT } from './constants.js';
-import { ctxOf } from './host.js';
+import { ctxOf, getContext } from './host.js';
 
 /**
  * Applies a test case's pinned configuration, and puts the user's own
@@ -74,7 +74,7 @@ export function waitForEvent(hostRef, eventType, timeoutMs = SETTLE_TIMEOUT_MS) 
 
 /* ------------------------------------------------------- profile helpers */
 
-export function getConnectionProfiles(hostRef) {
+export function getConnectionProfiles(hostRef = getContext) {
     const profiles = ctxOf(hostRef)?.extensionSettings?.connectionManager?.profiles;
     return Array.isArray(profiles) ? profiles : [];
 }
@@ -94,17 +94,17 @@ export function getProfileByName(hostRef, name) {
 }
 
 /** Accepts an id or, for settings written by hand, a name. */
-export function resolveProfile(hostRef, value) {
+export function resolveProfile(hostRef = getContext, value = '') {
     return getProfileById(hostRef, value) ?? getProfileByName(hostRef, value);
 }
 
-export function getSelectedProfileId(hostRef) {
+export function getSelectedProfileId(hostRef = getContext) {
     return ctxOf(hostRef)?.extensionSettings?.connectionManager?.selectedProfile ?? '';
 }
 
 /* -------------------------------------------------------- preset helpers */
 
-export function getPresetName(hostRef, apiId) {
+export function getPresetName(hostRef = getContext, apiId = '') {
     try {
         const context = ctxOf(hostRef);
         return context?.getPresetManager?.(normalizeApiId(hostRef, apiId))?.getSelectedPresetName?.() ?? '';
@@ -138,7 +138,7 @@ async function selectPreset(hostRef, apiId, presetName) {
  * Selecting a preset discards them, so the runner warns first. The dirty check
  * is a private helper in SillyBunny; if it disappears, assume the worst.
  */
-export function hasUnsavedPresetEdits(hostRef, apiId = '') {
+export function hasUnsavedPresetEdits(hostRef = getContext, apiId = '') {
     const manager = ctxOf(hostRef)?.getPresetManager?.(normalizeApiId(hostRef, apiId));
     if (!manager) {
         return false;
@@ -155,7 +155,7 @@ export function hasUnsavedPresetEdits(hostRef, apiId = '') {
 
 /* ------------------------------------------------------ character helpers */
 
-export function findCharacterIndex(hostRef, avatar) {
+export function findCharacterIndex(hostRef = getContext, avatar = '') {
     if (!avatar) {
         return -1;
     }
@@ -165,7 +165,7 @@ export function findCharacterIndex(hostRef, avatar) {
 }
 
 /** Always resolved fresh: characterId is copied by value into the context. */
-export function getCharacterAvatar(hostRef) {
+export function getCharacterAvatar(hostRef = getContext) {
     const context = ctxOf(hostRef);
     const index = context?.characterId;
     if (index === undefined || index === null) {
@@ -181,7 +181,7 @@ export function getCharacterAvatar(hostRef) {
  * Read live rather than from a cached context: several of these fields are
  * copied by value when the context object is built.
  */
-export function snapshotState(hostRef) {
+export function snapshotState(hostRef = getContext) {
     const context = ctxOf(hostRef);
     const presets = {};
     const mainApiId = normalizeApiId(hostRef);
@@ -278,7 +278,7 @@ async function applyPromptTagsProfile(hostRef, promptTags, caveats) {
  * Applies one test case's pins. Throws when a pin cannot be honoured, so the
  * runner can record the case as unrunnable rather than measure the wrong thing.
  */
-export async function applyCase(hostRef, pins, { signal = null } = {}) {
+export async function applyCase(hostRef = getContext, pins = null, { signal = null } = {}) {
     const caveats = [];
     await applyCharacter(hostRef, pins?.characterAvatar, { signal });
     if (signal?.aborted) {
@@ -303,7 +303,7 @@ export async function applyCase(hostRef, pins, { signal = null } = {}) {
  * restore one thing must not stop the others from being restored.
  * Returns the list of things that could not be put back.
  */
-export async function restoreState(hostRef, snapshot) {
+export async function restoreState(hostRef = getContext, snapshot = null) {
     const problems = [];
     if (!snapshot) {
         return problems;
@@ -372,7 +372,7 @@ export async function restoreState(hostRef, snapshot) {
  * warn the user that running tests will create one. Any failure answers "no
  * warning", because a preflight notice is not worth blocking a run over.
  */
-export async function willCreateChatFile(hostRef, avatar) {
+export async function willCreateChatFile(hostRef = getContext, avatar = '') {
     try {
         const context = ctxOf(hostRef);
         if (typeof globalThis.fetch !== 'function' || typeof context?.getRequestHeaders !== 'function') {

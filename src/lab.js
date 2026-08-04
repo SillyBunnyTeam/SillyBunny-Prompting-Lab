@@ -1,7 +1,8 @@
 import { evaluateAssertions } from './assertions.js';
+import { analyzeCache } from './cache-analyzer.js';
 import { compareRuns, findVolatileSpans } from './compare.js';
-import { STATUS } from './constants.js';
-import { getContext } from './host.js';
+import { CAVEAT, STATUS } from './constants.js';
+import { ctxOf, getContext, stringHash } from './host.js';
 import { collectIntegrations } from './integrations/index.js';
 import { runSuite as runnerRunSuite, preflight } from './runner.js';
 import { resolveStatus } from './schema.js';
@@ -18,16 +19,29 @@ import * as storage from './storage.js';
  * work out what changes between two builds of the same prompt, and compare the
  * result against the baseline.
  */
-function makeAnalyzer({ baselines, normalize }) {
-    return async ({ run, testCase, first, second }) => {
+function makeAnalyzer({ baselines, normalize, cachingAtDepth, host }) {
+    return async ({ run, testCase, first, second, context }) => {
         const volatileSpans = findVolatileSpans(
             { capture: first },
             second ? { capture: second } : null,
         );
-        run.cache = {
-            ...run.cache,
+
+        const live = ctxOf(context);
+        run.cache = analyzeCache({
+            messages: first.messages ?? [],
+            sections: first.sections,
+            sourceTexts: first.sourceTexts,
             volatileSpans,
-        };
+            cachingAtDepth,
+            squashSystem: Boolean(live?.chatCompletionSettings?.squash_system_messages),
+            hash: text => stringHash(host, text),
+        });
+        if (run.cache.source === 'unknown' && !run.caveats.includes(CAVEAT.CACHE_DEPTH_UNKNOWN)) {
+            run.caveats.push(CAVEAT.CACHE_DEPTH_UNKNOWN);
+        }
+        if (run.cache.squashApplied && !run.caveats.includes(CAVEAT.NO_SQUASH_LIVE)) {
+            run.caveats.push(CAVEAT.NO_SQUASH_LIVE);
+        }
 
         run.assertionResults = evaluateAssertions(testCase?.assertions, run);
 
@@ -110,7 +124,12 @@ export async function runSuite(suite, {
         onProgress,
         onStateChange,
         collectIntegrations,
-        analyze: makeAnalyzer({ baselines, normalize: settings.normalizeVolatile }),
+        analyze: makeAnalyzer({
+            baselines,
+            normalize: settings.normalizeVolatile,
+            cachingAtDepth: settings.manualCachingAtDepth,
+            host,
+        }),
         persistRun: async (run) => {
             if (run.status === STATUS.SKIPPED) {
                 return;

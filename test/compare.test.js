@@ -167,3 +167,38 @@ test('comparing against nothing does not throw', () => {
     assert.deepEqual(result.addedSections, ['main']);
     assert.equal(result.identical, false);
 });
+
+test('a volatile value is masked by the unchanged text around it', () => {
+    // The value differs on every build, so a later run holds a number that no
+    // earlier run ever produced. Only the surrounding text can locate it.
+    const spans = [{
+        text: '215',
+        otherText: '487',
+        anchorBefore: 'Lucky number: ',
+        anchorAfter: '.\nBe kind.',
+    }];
+    const a = normalizeVolatile('Lucky number: 903.\nBe kind.', spans);
+    const b = normalizeVolatile('Lucky number: 41.\nBe kind.', spans);
+    assert.equal(a, b, 'two unseen values must normalize to the same text');
+    assert.match(a, /Lucky number: ⟨changes each time⟩/);
+});
+
+test('anchored masking still leaves a genuine edit visible', () => {
+    const spans = [{
+        text: '215',
+        anchorBefore: 'Lucky number: ',
+        anchorAfter: '.\nBe kind.',
+    }];
+    const a = normalizeVolatile('Lucky number: 903.\nBe kind.', spans);
+    const b = normalizeVolatile('Lucky number: 41.\nBe cruel.', spans);
+    assert.notEqual(a, b);
+});
+
+test('findVolatileSpans records the unchanged text around the value', () => {
+    const first = { sections: [{ id: 'main', content: 'Lucky number: 215. Be kind.', tokens: 8 }] };
+    const second = { sections: [{ id: 'main', content: 'Lucky number: 487. Be kind.', tokens: 8 }] };
+    const [span] = findVolatileSpans({ capture: first }, { capture: second });
+    assert.equal(span.text, '215');
+    assert.match(span.anchorBefore, /Lucky number: $/);
+    assert.match(span.anchorAfter, /^\. Be kind\./);
+});

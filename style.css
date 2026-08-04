@@ -393,3 +393,57 @@
 .sbpl-button-quiet {
     opacity: 0.85;
 }
+
+/* ---- comparison ---- */
+
+.sbpl-raw-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+}
+
+.sbpl-diff-section {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
+    border-radius: 0.4em;
+    padding: 0.4em 0.6em;
+}
+
+.sbpl-diff-summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.sbpl-diff-body {
+    margin: 0.5em 0 0;
+    padding: 0.5em;
+    max-height: 24em;
+    overflow: auto;
+    border-radius: 0.3em;
+    background-color: var(--black30a, rgba(0, 0, 0, 0.2));
+    font-family: var(--monoFontFamily, monospace);
+    font-size: calc(var(--mainFontSize, 1rem) * 0.85);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* Added and removed carry an underline style as well as a colour. */
+.sbpl-diff-added {
+    color: var(--active, #5cb85c);
+    text-decoration: underline;
+    text-decoration-style: solid;
+}
+
+.sbpl-diff-removed {
+    color: var(--fullred, #d9534f);
+    text-decoration: line-through;
+}
+
+.sbpl-diff-same {
+    opacity: 0.75;
+}
+
+.sbpl-diff-output {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6em;
+}

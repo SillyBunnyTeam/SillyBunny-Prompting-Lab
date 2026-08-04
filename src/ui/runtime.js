@@ -1,6 +1,7 @@
 import { EXTENSION_LABEL, EXTENSION_NAME, TAB } from '../constants.js';
 import { element } from '../dom.js';
 import { createCasesTab } from './cases-tab.js';
+import { createDiffTab } from './diff-tab.js';
 import { createRunTab } from './run-tab.js';
 import { createWorkbench } from './workbench.js';
 
@@ -74,13 +75,18 @@ export function mountRuntimeUi({ signal = null } = {}) {
     });
 
     const runTab = createRunTab({
-        onRunFinished: () => workbench.refresh('run-finished'),
+        onRunFinished: () => {
+            workbench.refresh('run-finished');
+            diffTab.refresh();
+        },
     });
     const casesTab = createCasesTab({
         onChanged: () => runTab.refresh(),
     });
+    const diffTab = createDiffTab();
     workbench.registerTab(TAB.CASES, casesTab);
     workbench.registerTab(TAB.RUN, runTab);
+    workbench.registerTab(TAB.DIFF, diffTab);
 
     function syncDrawerAccessibility() {
         const expanded = Boolean(drawerIcon && !drawerIcon.classList.contains('down'));
