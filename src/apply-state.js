@@ -130,7 +130,8 @@ async function selectPreset(hostRef, apiId, presetName) {
         return false;
     }
     await manager.selectPreset(value);
-    return true;
+    const selected = manager.getSelectedPresetName?.();
+    return selected === undefined || selected === presetName;
 }
 
 /**
@@ -147,7 +148,8 @@ export function hasUnsavedPresetEdits(hostRef = getContext, apiId = '') {
         return null;
     }
     try {
-        return Boolean(manager._checkDirty());
+        manager._checkDirty({ force: true });
+        return typeof manager._dirty === 'boolean' ? manager._dirty : null;
     } catch {
         return null;
     }
@@ -214,11 +216,14 @@ async function runSlash(hostRef, command) {
 }
 
 async function applyCharacter(hostRef, avatar, { signal } = {}) {
+    if (!avatar) {
+        throw new Error('No character is chosen for this test case.');
+    }
     const index = findCharacterIndex(hostRef, avatar);
     if (index < 0) {
         throw new Error(`This test case uses a character that is not installed any more (${avatar}). Choose a different character or reinstall that card.`);
     }
-    if (ctxOf(hostRef).characterId === index) {
+    if (getCharacterAvatar(hostRef) === avatar) {
         return;
     }
     const settled = waitForEvent(hostRef, ctxOf(hostRef)?.eventTypes?.CHAT_CHANGED);
@@ -298,6 +303,198 @@ export async function applyCase(hostRef = getContext, pins = null, { signal = nu
 
 /* ---------------------------------------------------------------- restore */
 
+function sameId(left, right) {
+    return left !== undefined && left !== null
+        && right !== undefined && right !== null
+        && String(left) === String(right);
+}
+
+function hasConversation(context) {
+    return (context?.groupId !== undefined && context?.groupId !== null && context?.groupId !== '')
+        || (context?.characterId !== undefined && context?.characterId !== null)
+        || Boolean(context?.chatId);
+}
+
+function groupForSnapshot(context, groupId) {
+    return (Array.isArray(context?.groups) ? context.groups : [])
+        .find(group => sameId(group?.id, groupId)) ?? null;
+}
+
+async function restoreConversation(hostRef, snapshot, problems) {
+    const hasOriginalGroup = snapshot.groupId !== undefined
+        && snapshot.groupId !== null
+        && snapshot.groupId !== '';
+    if (hasOriginalGroup) {
+        const initial = ctxOf(hostRef);
+        const group = groupForSnapshot(initial, snapshot.groupId);
+        if (!group) {
+            problems.push(`group: the original group (${snapshot.groupId}) is no longer available.`);
+            return;
+        }
+
+        const targetChatId = String(snapshot.chatId ?? '');
+        if (targetChatId) {
+            const availableChats = Array.isArray(group.chats) ? group.chats : [];
+            if (!availableChats.some(chatId => String(chatId) === targetChatId)) {
+                problems.push(`group chat: chat "${targetChatId}" is no longer available in "${group.name}".`);
+                return;
+            }
+        }
+
+        let current = initial;
+        if (!sameId(current.groupId, snapshot.groupId)) {
+            let slashFailure = null;
+            if (typeof current.executeSlashCommandsWithOptions === 'function') {
+                try {
+                    await current.executeSlashCommandsWithOptions(`/go ${quoteSlashArg(group.name)}`);
+                } catch (error) {
+                    slashFailure = `group: selecting "${group.name}" failed: ${error?.message ?? error}`;
+                }
+            } else {
+                slashFailure = 'group: the host cannot select a group because its slash-command API is unavailable.';
+            }
+
+            current = ctxOf(hostRef);
+            // /go resolves characters before groups. If a character has the
+            // same name as the saved group, use the exact group API as a
+            // recovery path instead of accepting the wrong conversation.
+            if (!sameId(current.groupId, snapshot.groupId)
+                && typeof current.openGroupChat === 'function') {
+                try {
+                    const opened = await current.openGroupChat(group.id, snapshot.chatId);
+                    if (opened === false) {
+                        slashFailure = `${slashFailure ?? 'group: opening the original group failed.'} The exact group chat was refused.`;
+                    }
+                } catch (error) {
+                    slashFailure = `${slashFailure ?? 'group: opening the original group failed.'} The exact group chat failed: ${error?.message ?? error}`;
+                }
+            }
+
+            current = ctxOf(hostRef);
+            if (!sameId(current.groupId, snapshot.groupId)) {
+                problems.push(slashFailure ?? `group: selecting "${group.name}" did not restore the original group.`);
+                return;
+            }
+        }
+
+        current = ctxOf(hostRef);
+        if (!sameId(current.groupId, snapshot.groupId)) {
+            problems.push(`group: selecting "${group.name}" did not restore the original group.`);
+            return;
+        }
+
+        if (targetChatId) {
+            if (String(current.chatId ?? '') !== targetChatId) {
+                if (typeof current.openGroupChat !== 'function') {
+                    problems.push('group chat: the host cannot reopen the original group chat because openGroupChat is unavailable.');
+                    return;
+                }
+                try {
+                    const opened = await current.openGroupChat(group.id, snapshot.chatId);
+                    if (opened === false) {
+                        problems.push(`group chat: opening "${targetChatId}" was refused.`);
+                        return;
+                    }
+                } catch (error) {
+                    problems.push(`group chat: opening "${targetChatId}" failed: ${error?.message ?? error}`);
+                    return;
+                }
+            }
+        }
+
+        const verified = ctxOf(hostRef);
+        if (!sameId(verified.groupId, snapshot.groupId)) {
+            problems.push(`group: the restored conversation is not in "${group.name}".`);
+        }
+        if (String(verified.chatId ?? '') !== targetChatId) {
+            problems.push(`group chat: the restored chat is "${verified.chatId ?? ''}", not "${targetChatId}".`);
+        }
+        return;
+    }
+
+    if (snapshot.characterAvatar) {
+        let current = ctxOf(hostRef);
+        const needsCharacter = getCharacterAvatar(hostRef) !== snapshot.characterAvatar
+            || hasConversation(current) && (current.groupId !== undefined && current.groupId !== null && current.groupId !== '');
+        if (needsCharacter) {
+            const index = findCharacterIndex(hostRef, snapshot.characterAvatar);
+            if (index < 0) {
+                problems.push(`character: the original character (${snapshot.characterAvatar}) is no longer available.`);
+                return;
+            }
+            if (typeof current.selectCharacterById !== 'function') {
+                problems.push('character: the host cannot restore the original character because selectCharacterById is unavailable.');
+                return;
+            }
+            try {
+                const settled = waitForEvent(hostRef, current.eventTypes?.CHAT_CHANGED);
+                const selected = await current.selectCharacterById(index, { switchMenu: false });
+                if (selected === false) {
+                    problems.push('character: SillyBunny refused to restore the original character.');
+                    return;
+                }
+                await settled;
+                await delay(SETTLE_TICK_MS);
+            } catch (error) {
+                problems.push(`character: restoring "${snapshot.characterAvatar}" failed: ${error?.message ?? error}`);
+                return;
+            }
+        }
+
+        current = ctxOf(hostRef);
+        if (getCharacterAvatar(hostRef) !== snapshot.characterAvatar
+            || (current.groupId !== undefined && current.groupId !== null && current.groupId !== '')) {
+            problems.push(`character: the restored conversation is not the original character (${snapshot.characterAvatar}).`);
+            return;
+        }
+
+        const targetChatId = String(snapshot.chatId ?? '');
+        if (targetChatId && String(current.chatId ?? '') !== targetChatId) {
+            if (typeof current.openCharacterChat !== 'function') {
+                problems.push('character chat: the host cannot reopen the original chat because openCharacterChat is unavailable.');
+                return;
+            }
+            try {
+                const opened = await current.openCharacterChat(snapshot.chatId);
+                if (opened === false) {
+                    problems.push(`character chat: opening "${targetChatId}" was refused.`);
+                    return;
+                }
+            } catch (error) {
+                problems.push(`character chat: opening "${targetChatId}" failed: ${error?.message ?? error}`);
+                return;
+            }
+        }
+        const verified = ctxOf(hostRef);
+        if (getCharacterAvatar(hostRef) !== snapshot.characterAvatar) {
+            problems.push(`character: the restored conversation is not the original character (${snapshot.characterAvatar}).`);
+        }
+        if (String(verified.chatId ?? '') !== targetChatId) {
+            problems.push(`character chat: the restored chat is "${verified.chatId ?? ''}", not "${targetChatId}".`);
+        }
+        return;
+    }
+
+    const current = ctxOf(hostRef);
+    if (typeof current.closeCurrentChat !== 'function') {
+        problems.push('conversation: the host cannot close the current conversation because closeCurrentChat is unavailable.');
+        return;
+    }
+    try {
+        const closed = await current.closeCurrentChat();
+        if (closed === false) {
+            problems.push('conversation: the host refused to close the current conversation.');
+            return;
+        }
+    } catch (error) {
+        problems.push(`conversation: closing the current conversation failed: ${error?.message ?? error}`);
+        return;
+    }
+    if (hasConversation(ctxOf(hostRef))) {
+        problems.push('conversation: closing the current conversation did not leave an empty context.');
+    }
+}
+
 /**
  * Puts the user's configuration back. Every step is guarded: a failure to
  * restore one thing must not stop the others from being restored.
@@ -309,26 +506,24 @@ export async function restoreState(hostRef = getContext, snapshot = null) {
         return problems;
     }
 
-    // The character is restored first. Opening a character raises CHAT_CHANGED,
-    // which makes SillyBunny re-apply a chat-locked persona and a preset named
-    // after the character; doing it last would undo everything below it.
+    // Restore the conversation first. Opening it can re-apply a chat-locked
+    // persona or preset, so those settings are deliberately restored below.
     try {
-        if (snapshot.characterAvatar && getCharacterAvatar(hostRef) !== snapshot.characterAvatar) {
-            const index = findCharacterIndex(hostRef, snapshot.characterAvatar);
-            if (index >= 0) {
-                const settled = waitForEvent(hostRef, ctxOf(hostRef)?.eventTypes?.CHAT_CHANGED);
-                await ctxOf(hostRef).selectCharacterById(index, { switchMenu: false });
-                await settled;
-                await delay(SETTLE_TICK_MS);
-            }
-        }
+        await restoreConversation(hostRef, snapshot, problems);
     } catch (error) {
-        problems.push(`character: ${error?.message ?? error}`);
+        problems.push(`conversation: ${error?.message ?? error}`);
     }
 
     try {
         if (snapshot.personaKey && ctxOf(hostRef)?.userAvatar !== snapshot.personaKey) {
-            await runSlash(hostRef, `/persona-set mode=lookup ${quoteSlashArg(snapshot.personaKey)}`);
+            if (typeof ctxOf(hostRef)?.executeSlashCommandsWithOptions !== 'function') {
+                problems.push('persona: the host cannot restore the original persona because its slash-command API is unavailable.');
+            } else {
+                await runSlash(hostRef, `/persona-set mode=lookup ${quoteSlashArg(snapshot.personaKey)}`);
+                if (ctxOf(hostRef)?.userAvatar !== snapshot.personaKey) {
+                    problems.push(`persona: the restored persona is "${ctxOf(hostRef)?.userAvatar ?? ''}", not "${snapshot.personaKey}".`);
+                }
+            }
         }
     } catch (error) {
         problems.push(`persona: ${error?.message ?? error}`);
@@ -336,10 +531,19 @@ export async function restoreState(hostRef = getContext, snapshot = null) {
 
     try {
         if (getSelectedProfileId(hostRef) !== snapshot.profileId) {
-            const profile = getProfileById(hostRef, snapshot.profileId);
-            const loaded = waitForEvent(hostRef, ctxOf(hostRef)?.eventTypes?.CONNECTION_PROFILE_LOADED);
-            await runSlash(hostRef, `/profile await=true ${quoteSlashArg(profile?.name ?? NONE_PROFILE)}`);
-            await loaded;
+            const profile = snapshot.profileId ? resolveProfile(hostRef, snapshot.profileId) : null;
+            if (snapshot.profileId && !profile) {
+                problems.push(`connection profile: the original profile (${snapshot.profileId}) is no longer available.`);
+            } else if (typeof ctxOf(hostRef)?.executeSlashCommandsWithOptions !== 'function') {
+                problems.push('connection profile: the host cannot restore the original profile because its slash-command API is unavailable.');
+            } else {
+                const loaded = waitForEvent(hostRef, ctxOf(hostRef)?.eventTypes?.CONNECTION_PROFILE_LOADED);
+                await runSlash(hostRef, `/profile await=true ${quoteSlashArg(profile?.name ?? NONE_PROFILE)}`);
+                await loaded;
+                if (getSelectedProfileId(hostRef) !== snapshot.profileId) {
+                    problems.push(`connection profile: the restored profile is "${getSelectedProfileId(hostRef)}", not "${snapshot.profileId}".`);
+                }
+            }
         }
     } catch (error) {
         problems.push(`connection profile: ${error?.message ?? error}`);
@@ -351,7 +555,10 @@ export async function restoreState(hostRef = getContext, snapshot = null) {
             continue;
         }
         try {
-            await selectPreset(hostRef, apiId, presetName);
+            const restored = await selectPreset(hostRef, apiId, presetName);
+            if (!restored) {
+                problems.push(`preset "${presetName}" (${apiId}) is no longer available.`);
+            }
         } catch (error) {
             problems.push(`preset "${presetName}" (${apiId}): ${error?.message ?? error}`);
         }

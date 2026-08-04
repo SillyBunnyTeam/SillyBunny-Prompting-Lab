@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ASSERTION, STATUS } from '../src/constants.js';
+import { ASSERTION, MAX_REGEX_LENGTH, STATUS } from '../src/constants.js';
 import {
     createCase,
     createSuite,
@@ -106,6 +106,13 @@ test('validateAssertion rejects an invalid search pattern', () => {
     assert.match(problems[0], /not valid/);
 });
 
+test('regex assertions are bounded before validation or evaluation', () => {
+    const pattern = 'a'.repeat(MAX_REGEX_LENGTH + 1);
+    const problems = validateAssertion({ type: ASSERTION.CONTENT_MATCH, mode: 'regex', value: pattern });
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /too long/);
+});
+
 test('validateCase reports missing name, character and bad checks', () => {
     const problems = validateCase({
         name: '   ',
@@ -172,6 +179,33 @@ test('normalizeRun repairs a partial record', () => {
 test('normalizeRun keeps valid breakpoints and drops invalid ones', () => {
     const run = normalizeRun({ cache: { predictedBreakpoints: [0, 3, -2, 'x'] } });
     assert.deepEqual(run.cache.predictedBreakpoints, [0, 3]);
+});
+
+test('normalizeRun preserves unchecked results and sanitizes volatile spans', () => {
+    const run = normalizeRun({
+        assertionResults: [{ pass: null, message: 'not measurable' }],
+        cache: {
+            volatileSpans: [
+                {
+                    section: 'main',
+                    text: 'old',
+                    otherText: 'new',
+                    anchorBefore: 'x'.repeat(40),
+                    anchorAfter: 'y'.repeat(40),
+                    aboveBreakpoint: true,
+                    unexpected: 'drop me',
+                },
+                null,
+                { section: 42, text: 'bad', otherText: 'bad' },
+                { text: 'missing other side' },
+            ],
+        },
+    });
+    assert.equal(run.assertionResults[0].pass, null);
+    assert.equal(run.cache.volatileSpans.length, 1);
+    assert.equal(run.cache.volatileSpans[0].unexpected, undefined);
+    assert.equal(run.cache.volatileSpans[0].anchorBefore.length, 24);
+    assert.equal(run.cache.volatileSpans[0].anchorAfter.length, 24);
 });
 
 test('resolveStatus ranks failures above differences', () => {

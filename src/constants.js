@@ -42,29 +42,6 @@ export const STATUS_LABEL = Object.freeze({
     [STATUS.SKIPPED]: 'Skipped',
 });
 
-/**
- * Top-level prompt section identifiers used by chat completion.
- * Mirrors the collections built in the host's populateChatCompletion.
- */
-export const CC_SECTION_IDS = Object.freeze([
-    'worldInfoBefore',
-    'main',
-    'worldInfoAfter',
-    'charDescription',
-    'charPersonality',
-    'scenario',
-    'personaDescription',
-    'controlPrompts',
-    'nsfw',
-    'jailbreak',
-    'enhanceDefinitions',
-    'bias',
-    'dialogueExamples',
-    'chatHistory',
-    'continueNudge',
-    'sillybunnyRuntimeAgents',
-]);
-
 export const SECTION_LABEL = Object.freeze({
     worldInfoBefore: 'World Info (before character)',
     main: 'Main prompt',
@@ -121,20 +98,18 @@ export const ASSERTION_LABEL = Object.freeze({
 export const CAVEAT = Object.freeze({
     NO_INTERCEPTORS: 'no-interceptors',
     NO_SQUASH_LIVE: 'no-squash-live',
-    CHAT_FILE_CREATED: 'chat-file-created',
     PROMPT_TAGS_MISSING: 'prompt-tags-missing',
-    MACRO_ENHANCED_MISSING: 'macro-enhanced-missing',
     CACHE_DEPTH_UNKNOWN: 'cache-depth-unknown',
+    CACHE_BOUNDARY_PREDICTED: 'cache-boundary-predicted',
     TOKENIZER_FALLBACK: 'tokenizer-fallback',
 });
 
 export const CAVEAT_TEXT = Object.freeze({
     [CAVEAT.NO_INTERCEPTORS]: 'Extensions that rewrite chat history before sending, such as vector storage and summaries, do not run during a test. A real reply may include content this test does not show.',
     [CAVEAT.NO_SQUASH_LIVE]: 'Merging of consecutive system messages was calculated by Prompting Lab rather than performed by SillyBunny, so message grouping may differ slightly from a real send.',
-    [CAVEAT.CHAT_FILE_CREATED]: 'This character had no chat yet, so opening it created one.',
     [CAVEAT.PROMPT_TAGS_MISSING]: 'This test pins a Prompt Tags profile, but the Prompt Tags extension is not installed or enabled.',
-    [CAVEAT.MACRO_ENHANCED_MISSING]: 'Macro Enhanced is not installed, so its settings were not recorded for this run.',
     [CAVEAT.CACHE_DEPTH_UNKNOWN]: 'The prompt caching depth is unknown, so cache checks were skipped. Set it in Prompting Lab settings.',
+    [CAVEAT.CACHE_BOUNDARY_PREDICTED]: 'Cache boundaries are predictions inferred from the captured prompt. The server does not report the actual boundary; this analysis follows Claude-style caching.',
     [CAVEAT.TOKENIZER_FALLBACK]: 'Token counts are estimates because the tokenizer was unavailable.',
 });
 
@@ -164,8 +139,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
     dismissedWarnings: Object.freeze({}),
 });
 
-/** Connection profile modes that can be used for side-by-side responses. */
-export const AB_SUPPORTED_MODES = Object.freeze(['cc', 'tc']);
+/** Regex input is untrusted; short catastrophic patterns can still backtrack. */
+export const MAX_REGEX_LENGTH = 512;
 
 export const MAX_EXPORT_BYTES = 1024 * 1024;
 export const MAX_EXPORT_WITH_BASELINES_BYTES = 10 * 1024 * 1024;

@@ -32,40 +32,43 @@ function placeholderFor(span) {
 
 export function normalizeVolatile(text, spans = []) {
     let source = String(text ?? '');
+    const applicable = Array.isArray(spans) ? spans.filter(Boolean) : [];
+
+    // Without an unchanged anchor there is no safe way to find a value that
+    // never repeats. The whole section is the applicable volatile region; the
+    // caller is responsible for scoping spans to that section first.
+    const wholeSection = applicable.find(span => !span?.anchorBefore
+        && !span?.anchorAfter
+        && (span?.text || span?.otherText));
+    if (wholeSection) {
+        return placeholderFor(wholeSection);
+    }
 
     // Anchored masking first. A value that differs on every build cannot be
     // matched by the text one run happened to produce, but the unchanged text
     // around it can be, so mask whatever sits between those anchors.
-    for (const span of spans ?? []) {
+    for (const span of applicable) {
         const before = String(span?.anchorBefore ?? '');
         const after = String(span?.anchorAfter ?? '');
-        if (!before && !after) {
-            continue;
+        if (before && after) {
+            const pattern = new RegExp(
+                `${escapeRegExp(before)}[\\s\\S]*?${escapeRegExp(after)}`,
+                'g',
+            );
+            source = source.replace(pattern, `${before}${placeholderFor(span)}${after}`);
+        } else if (before) {
+            const pattern = new RegExp(`${escapeRegExp(before)}[\\s\\S]*$`, 'g');
+            source = source.replace(pattern, `${before}${placeholderFor(span)}`);
+        } else if (after) {
+            const pattern = new RegExp(`^[\\s\\S]*?${escapeRegExp(after)}`, 'g');
+            source = source.replace(pattern, `${placeholderFor(span)}${after}`);
         }
-        const middle = before && after ? '[\\s\\S]*?' : '[\\s\\S]{0,200}?';
-        const pattern = new RegExp(
-            `${escapeRegExp(before)}(${middle})${escapeRegExp(after)}`,
-            'g',
-        );
-        source = source.replace(pattern, `${before}${placeholderFor(span)}${after}`);
     }
 
-    const labels = new Map();
-    for (const span of spans ?? []) {
-        if (span && typeof span.text === 'string' && span.text.length && !labels.has(span.text)) {
-            labels.set(span.text, placeholderFor(span));
-        }
-    }
-    if (!labels.size) {
-        return source;
-    }
-    // One pass over the original text. Replacing spans one after another would
-    // let a later span match inside a placeholder written by an earlier one and
-    // shred it; a single regex never re-scans what it has already replaced.
-    // Longest first, because alternation matches the first branch that fits.
-    const ordered = [...labels.keys()].sort((a, b) => b.length - a.length);
-    const pattern = new RegExp(ordered.map(escapeRegExp).join('|'), 'g');
-    return source.replace(pattern, match => labels.get(match) ?? match);
+    // Anchors define the only safe region for a value that was observed in an
+    // earlier run. Do not replace that value globally: it may also occur in a
+    // genuinely edited part of the same section.
+    return source;
 }
 
 function escapeRegExp(value) {
@@ -80,7 +83,7 @@ function escapeRegExp(value) {
 export function compareRuns(run, baseline, { volatileSpans = [], normalize = true } = {}) {
     const current = sectionMap(run);
     const previous = sectionMap(baseline);
-    const spans = normalize ? volatileSpans : [];
+    const spans = normalize && Array.isArray(volatileSpans) ? volatileSpans : [];
 
     const addedSections = [...current.keys()].filter(id => !previous.has(id));
     const removedSections = [...previous.keys()].filter(id => !current.has(id));
@@ -92,8 +95,9 @@ export function compareRuns(run, baseline, { volatileSpans = [], normalize = tru
         const currentTokens = Number(section.tokens ?? 0);
         const baselineTokens = Number(before?.tokens ?? 0);
         if (before) {
-            const a = normalizeVolatile(before.content, spans);
-            const b = normalizeVolatile(section.content, spans);
+            const sectionSpans = spans.filter(span => !span?.section || span.section === id);
+            const a = normalizeVolatile(before.content, sectionSpans);
+            const b = normalizeVolatile(section.content, sectionSpans);
             if (a !== b) {
                 changedSections.push(id);
             }

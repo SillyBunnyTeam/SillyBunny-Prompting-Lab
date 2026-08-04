@@ -66,12 +66,35 @@ test('the personas and profiles offered come from the host', async ({ page }) =>
     const selects = panel.locator('.sbpl-editor select');
     await expect(selects.nth(1)).toContainText('Me');
     await expect(selects.nth(2)).toContainText('Claude');
-    await expect(selects.nth(3)).toContainText('Deep');
+    await expect(selects.nth(3)).toContainText('Tagged');
+    await expect(selects.nth(4)).toContainText('Deep');
+});
+
+test('a Prompt Tags profile can be pinned from the case editor', async ({ page }) => {
+    const panel = await openTab(page, 'cases');
+    await panel.locator('button', { hasText: 'New suite' }).click();
+    await panel.locator('button', { hasText: 'New test case' }).click();
+    const selects = panel.locator('.sbpl-editor select');
+    await selects.nth(0).selectOption('tester.png');
+    await selects.nth(3).selectOption('Tagged');
+    await panel.locator('button', { hasText: 'Save test case' }).click();
+    await panel.locator('button', { hasText: 'Edit' }).click();
+    await expect(panel.locator('.sbpl-editor select').nth(3)).toHaveValue('Tagged');
 });
 
 test('the run tab explains itself before any suite exists', async ({ page }) => {
     const panel = await openTab(page, 'run');
     await expect(panel).toContainText('No test suites yet');
+});
+
+test('a run result row shows unchecked checks explicitly', async ({ page }) => {
+    await page.goto('/test/browser/fixture.html');
+    await page.waitForFunction(() => globalThis.__ready === true);
+    await page.evaluate(() => globalThis.fixtureSeedUnchecked());
+    await page.locator('#sbpl-menu-item').click();
+    await page.locator('#sbpl-tab-run').click();
+    await expect(page.locator('#sbpl-panel')).toContainText('unchecked');
+    await expect(page.locator('#sbpl-panel')).toContainText('No lorebook activity was recorded');
 });
 
 test('the comparison tab asks for two runs before it can compare', async ({ page }) => {

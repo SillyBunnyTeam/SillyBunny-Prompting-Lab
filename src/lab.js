@@ -4,8 +4,9 @@ import { compareRuns, findVolatileSpans } from './compare.js';
 import { CAVEAT, STATUS } from './constants.js';
 import { ctxOf, getContext, stringHash } from './host.js';
 import { collectIntegrations } from './integrations/index.js';
-import { runSuite as runnerRunSuite, preflight } from './runner.js';
-import { resolveStatus } from './schema.js';
+import { listPromptTagsProfiles } from './integrations/prompttags.js';
+import { runSuite as runnerRunSuite, preflight, summarize } from './runner.js';
+import { createRun, resolveStatus } from './schema.js';
 import { getSettings } from './settings.js';
 import * as storage from './storage.js';
 
@@ -34,10 +35,19 @@ function makeAnalyzer({ baselines, normalize, cachingAtDepth, host }) {
             volatileSpans,
             cachingAtDepth,
             squashSystem: Boolean(live?.chatCompletionSettings?.squash_system_messages),
+            useSysPrompt: first.useSysPrompt
+                ?? live?.chatCompletionSettings?.use_sysprompt
+                ?? true,
+            useTools: first.useTools ?? true,
+            prefillString: first.prefillString ?? '',
+            names: first.promptNames ?? {},
             hash: text => stringHash(host, text),
         });
         if (run.cache.source === 'unknown' && !run.caveats.includes(CAVEAT.CACHE_DEPTH_UNKNOWN)) {
             run.caveats.push(CAVEAT.CACHE_DEPTH_UNKNOWN);
+        }
+        if (run.cache.source === 'manual' && !run.caveats.includes(CAVEAT.CACHE_BOUNDARY_PREDICTED)) {
+            run.caveats.push(CAVEAT.CACHE_BOUNDARY_PREDICTED);
         }
         if (run.cache.squashApplied && !run.caveats.includes(CAVEAT.NO_SQUASH_LIVE)) {
             run.caveats.push(CAVEAT.NO_SQUASH_LIVE);
@@ -97,9 +107,18 @@ export async function getSuiteCases(suite) {
 }
 
 /** Checks a suite before anything is changed. */
-export async function preflightSuite(suite) {
+export async function preflightSuite(suite, {
+    context = getContext,
+    chatFileChecker = undefined,
+} = {}) {
     const cases = await getSuiteCases(suite);
-    return { ...await preflight(cases), cases };
+    return {
+        ...await preflight(cases, {
+            context,
+            ...(chatFileChecker ? { chatFileChecker } : {}),
+        }),
+        cases,
+    };
 }
 
 /**
@@ -112,10 +131,23 @@ export async function runSuite(suite, {
     onStateChange = null,
     host = null,
     cases = null,
+    blocked = [],
 } = {}) {
     const settings = getSettings();
     const toRun = cases ?? await getSuiteCases(suite);
     const baselines = await loadBaselines(suite);
+
+    const persist = async (run) => {
+        if (run.status === STATUS.SKIPPED) {
+            return;
+        }
+        await storage.saveRun(run);
+        await storage.pruneRuns(
+            run.caseId,
+            settings.runRetention,
+            Object.values(suite?.baselines ?? {}),
+        );
+    };
 
     const result = await runnerRunSuite(toRun, {
         host,
@@ -130,18 +162,23 @@ export async function runSuite(suite, {
             cachingAtDepth: settings.manualCachingAtDepth,
             host,
         }),
-        persistRun: async (run) => {
-            if (run.status === STATUS.SKIPPED) {
-                return;
-            }
-            await storage.saveRun(run);
-            await storage.pruneRuns(
-                run.caseId,
-                settings.runRetention,
-                Object.values(suite?.baselines ?? {}),
-            );
-        },
+        persistRun: persist,
     });
+
+    for (const item of blocked ?? []) {
+        const blockedRun = createRun({
+            suiteRunId: result.suiteRunId,
+            suiteId: suite?.id ?? '',
+            caseId: item?.caseId ?? '',
+            caseName: item?.caseName ?? '',
+            status: STATUS.ERROR,
+            startedAt: new Date().toISOString(),
+            error: { message: String(item?.reason ?? 'This test case could not run.'), stack: '' },
+        });
+        await persist(blockedRun);
+        result.runs.push(blockedRun);
+    }
+    result.summary = summarize(result.runs);
 
     return result;
 }
@@ -193,8 +230,7 @@ export function readAvailableOptions(context = getContext()) {
         presets = [];
     }
 
-    const promptTagsProfiles = Object.entries(context?.extensionSettings?.promptTags?.profiles ?? {})
-        .map(([name, profile]) => ({ name, id: profile?.id ?? '' }));
+    const promptTagsProfiles = listPromptTagsProfiles(context);
 
     return { characters, personas, profiles, presets, promptTagsProfiles };
 }

@@ -137,6 +137,17 @@ test('unknown fields in an imported case are dropped', () => {
     assert.equal(imported.cases[0].assertions.length, 1);
 });
 
+test('imports reject oversized regex assertions before storing them', () => {
+    const { suite, cases } = sampleSuite();
+    const payload = JSON.parse(buildExport(suite, cases).text);
+    payload.cases[0].assertions = [{
+        type: 'content-match',
+        mode: 'regex',
+        value: 'a'.repeat(513),
+    }];
+    assert.throws(() => parseImport(JSON.stringify(payload)), /longer than the 512-character limit/);
+});
+
 /* ------------------------------------------------- embedding into a card */
 
 test('embedding drops the pins that only make sense on one installation', () => {

@@ -136,3 +136,31 @@ test('diffSection copes with runs that captured nothing', () => {
     assert.equal(row.baselineTokens, 0);
     assert.deepEqual(row.parts, []);
 });
+
+test('diffSection applies volatile spans only to the requested section', () => {
+    const baseline = {
+        capture: {
+            sections: [
+                { id: 'main', content: 'Roll: 3', tokens: 2 },
+                { id: 'chatHistory', content: 'stable', tokens: 1 },
+            ],
+        },
+    };
+    const current = {
+        capture: {
+            sections: [
+                { id: 'main', content: 'Roll: 7', tokens: 2 },
+                { id: 'chatHistory', content: 'edited', tokens: 1 },
+            ],
+        },
+    };
+    const spans = [{ section: 'main', text: '3', otherText: '7' }];
+    assert.equal(isUnchanged(diffSection(baseline, current, 'main', {
+        volatileSpans: spans,
+        normalize: true,
+    }).parts), true);
+    assert.equal(isUnchanged(diffSection(baseline, current, 'chatHistory', {
+        volatileSpans: spans,
+        normalize: true,
+    }).parts), false);
+});

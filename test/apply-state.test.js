@@ -311,6 +311,139 @@ test('a stale context snapshot cannot make restore skip the character', async ()
     assert.equal(backing.characterId, 0, 'restore must act on the live character');
 });
 
+test('restoreState returns the original group and exact group chat', async () => {
+    const context = makeHost();
+    context.characters = [
+        { avatar: 'aqua.png', name: 'Aqua' },
+        { avatar: 'megumin.png', name: 'Megumin' },
+    ];
+    context.groups = [
+        { id: 'group-1', name: 'Guild', chats: ['group-chat-old', 'group-chat-new'], chat_id: 'group-chat-old' },
+        { id: 'group-2', name: 'Other', chats: ['other-chat'], chat_id: 'other-chat' },
+    ];
+    context.groupId = 'group-1';
+    context.characterId = undefined;
+    context.chatId = 'group-chat-old';
+    context.executeSlashCommandsWithOptions = async (command) => {
+        context.commands.push(command);
+        if (command === '/go "Guild"') {
+            context.groupId = 'group-1';
+            context.chatId = 'group-chat-new';
+        }
+    };
+    context.openGroupChat = async (groupId, chatId) => {
+        context.groupId = groupId;
+        context.chatId = chatId;
+    };
+
+    const snapshot = snapshotState(context);
+    context.groupId = 'group-2';
+    context.chatId = 'other-chat';
+    const problems = await restoreState(context, snapshot);
+
+    assert.deepEqual(problems, []);
+    assert.equal(context.groupId, 'group-1');
+    assert.equal(context.chatId, 'group-chat-old');
+    assert.ok(context.commands.includes('/go "Guild"'));
+});
+
+test('restoreState recovers a same-named group through the exact group-chat API', async () => {
+    const context = makeHost();
+    context.groups = [{ id: 'group-1', name: 'Guild', chats: ['group-chat'] }];
+    context.groupId = 'group-1';
+    context.characterId = undefined;
+    context.chatId = 'group-chat';
+    const snapshot = snapshotState(context);
+    context.groupId = 'character-with-same-name';
+    context.chatId = 'other-chat';
+    context.executeSlashCommandsWithOptions = async command => context.commands.push(command);
+    context.openGroupChat = async (groupId, chatId) => {
+        context.groupId = groupId;
+        context.chatId = chatId;
+    };
+
+    const problems = await restoreState(context, snapshot);
+
+    assert.deepEqual(problems, []);
+    assert.equal(context.groupId, 'group-1');
+    assert.equal(context.chatId, 'group-chat');
+});
+
+test('restoreState reopens an exact non-default character chat', async () => {
+    const context = makeHost();
+    context.chatId = 'character-chat-old';
+    context.openCharacterChat = async chatId => { context.chatId = chatId; };
+    const snapshot = snapshotState(context);
+    context.chatId = 'character-chat-current';
+
+    const problems = await restoreState(context, snapshot);
+
+    assert.deepEqual(problems, []);
+    assert.equal(context.chatId, 'character-chat-old');
+});
+
+test('restoreState reports missing groups and chat APIs instead of silently continuing', async () => {
+    const missingGroup = makeHost();
+    missingGroup.groupId = 'deleted-group';
+    missingGroup.characterId = undefined;
+    missingGroup.chatId = 'group-chat';
+    missingGroup.groups = [];
+    const groupProblems = await restoreState(missingGroup, snapshotState(missingGroup));
+    assert.ok(groupProblems.some(problem => problem.startsWith('group:')));
+
+    const missingChatApi = makeHost();
+    missingChatApi.chatId = 'old-chat';
+    const snapshot = snapshotState(missingChatApi);
+    missingChatApi.chatId = 'current-chat';
+    const chatProblems = await restoreState(missingChatApi, snapshot);
+    assert.ok(chatProblems.some(problem => problem.startsWith('character chat:')));
+});
+
+test('restoreState reports unavailable or no-op setting restorations', async () => {
+    const context = makeHost({ profiles: [{ id: 'p1', name: 'Local' }, { id: 'p2', name: 'Other' }], presets: { openai: 'Mine' } });
+    const snapshot = snapshotState(context);
+    context.userAvatar = 'someone-else.png';
+    context.extensionSettings.connectionManager.selectedProfile = 'p2';
+    context.executeSlashCommandsWithOptions = undefined;
+    context.getPresetManager = () => ({
+        getSelectedPresetName: () => 'Other preset',
+        findPreset: () => undefined,
+    });
+
+    const problems = await restoreState(context, snapshot);
+
+    assert.ok(problems.some(problem => problem.startsWith('persona:')));
+    assert.ok(problems.some(problem => problem.startsWith('connection profile:')));
+    assert.ok(problems.some(problem => problem.startsWith('preset')));
+});
+
+test('restoreState reports a preset that cannot be selected', async () => {
+    const context = makeHost({ presets: { openai: 'Mine' } });
+    const snapshot = snapshotState(context);
+    context.getPresetManager = () => ({
+        getSelectedPresetName: () => 'Other preset',
+        findPreset: () => undefined,
+    });
+
+    const problems = await restoreState(context, snapshot);
+
+    assert.ok(problems.some(problem => problem.includes('preset "Mine"')));
+});
+
+test('restoreState reports a preset manager that ignores the selection', async () => {
+    const context = makeHost({ presets: { openai: 'Mine' } });
+    const snapshot = snapshotState(context);
+    context.getPresetManager = () => ({
+        getSelectedPresetName: () => 'Other preset',
+        findPreset: () => 'value:Mine',
+        async selectPreset() {},
+    });
+
+    const problems = await restoreState(context, snapshot);
+
+    assert.ok(problems.some(problem => problem.includes('preset "Mine"')));
+});
+
 test('restore puts the character back before the preset', async () => {
     const backing = makeHost({ presets: { openai: 'Mine' } });
     const provider = () => ({ ...backing, characterId: backing.characterId, userAvatar: backing.userAvatar });
@@ -332,8 +465,20 @@ test('restore puts the character back before the preset', async () => {
 test('an unavailable dirty check is reported as unknown rather than clean', () => {
     const context = makeHost();
     assert.equal(hasUnsavedPresetEdits(context), null);
-    context.getPresetManager = () => ({ _checkDirty: () => true });
+    context.getPresetManager = () => ({
+        _dirty: true,
+        _checkDirty(options) {
+            assert.deepEqual(options, { force: true });
+        },
+    });
     assert.equal(hasUnsavedPresetEdits(context), true);
+    context.getPresetManager = () => ({
+        _dirty: false,
+        _checkDirty() {},
+    });
+    assert.equal(hasUnsavedPresetEdits(context), false);
+    context.getPresetManager = () => ({ _checkDirty() {} });
+    assert.equal(hasUnsavedPresetEdits(context), null);
     context.getPresetManager = () => ({ _checkDirty: () => { throw new Error('gone'); } });
     assert.equal(hasUnsavedPresetEdits(context), null);
 });

@@ -80,10 +80,6 @@ export function createCasesTab({ onChanged = null } = {}) {
                 }, { className: 'menu_button sbpl-button' }),
                 button('Delete', async () => {
                     await storage.deleteCase(testCase.id);
-                    await storage.saveSuite({
-                        ...activeSuite,
-                        caseIds: activeSuite.caseIds.filter(id => id !== testCase.id),
-                    });
                     if (editing?.id === testCase.id) {
                         editing = null;
                     }
@@ -156,6 +152,29 @@ export function createCasesTab({ onChanged = null } = {}) {
             editing.pins.connectionProfileId = profileSelect.value;
         });
 
+        const promptTagsSelect = element('select', { className: 'text_pole sbpl-select' });
+        const promptTags = [...options.promptTagsProfiles];
+        const pinnedPromptTags = editing.pins.promptTags;
+        if (pinnedPromptTags?.profileName && !promptTags.some(profile => profile.name === pinnedPromptTags.profileName)) {
+            promptTags.push({
+                name: pinnedPromptTags.profileName,
+                id: pinnedPromptTags.profileId,
+            });
+        }
+        optionList(promptTagsSelect, promptTags, {
+            valueKey: 'name',
+            labelKey: 'name',
+            includeBlank: 'Leave Prompt Tags as it is',
+        });
+        promptTagsSelect.value = pinnedPromptTags?.profileName ?? '';
+        promptTagsSelect.disabled = !options.promptTagsProfiles.length && !pinnedPromptTags?.profileName;
+        promptTagsSelect.addEventListener('change', () => {
+            const profile = options.promptTagsProfiles.find(item => item.name === promptTagsSelect.value);
+            editing.pins.promptTags = profile
+                ? { profileId: profile.id, profileName: profile.name }
+                : (promptTagsSelect.value === '' ? null : editing.pins.promptTags);
+        });
+
         const presetSelect = element('select', { className: 'text_pole sbpl-select' });
         optionList(presetSelect, options.presets.map(name => ({ name })), {
             valueKey: 'name',
@@ -181,6 +200,7 @@ export function createCasesTab({ onChanged = null } = {}) {
             field('Character', characterSelect),
             field('Persona', personaSelect),
             field('Connection profile', profileSelect),
+            field('Prompt Tags profile', promptTagsSelect),
             field('Preset', presetSelect),
             field('Example message', messageInput, {
                 hint: 'Added to the chat while the prompt is built, then removed. Nothing is sent and nothing is saved to the chat.',

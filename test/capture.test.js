@@ -241,6 +241,25 @@ test('readTextCompletionSections counts each piece separately', async () => {
     assert.ok(tokenTable.total > 0);
 });
 
+test('readTextCompletionSections counts the final combined prompt once for the total', async () => {
+    const context = { getTokenCountAsync: async text => String(text).length };
+    globalThis.SillyTavern = { getContext: () => context };
+    const { tokenTable, estimated } = await readTextCompletionSections({
+        storyString: 'abc',
+        mesSendString: 'def',
+    }, 'abc\ndef');
+    assert.equal(tokenTable.total, 7);
+    assert.equal(estimated, false);
+});
+
+test('readTextCompletionSections marks a summed total as estimated when final counting fails', async () => {
+    const context = { getTokenCountAsync: async () => { throw new Error('no tokenizer'); } };
+    globalThis.SillyTavern = { getContext: () => context };
+    const { tokenTable, estimated } = await readTextCompletionSections({ storyString: 'abc' }, 'abc');
+    assert.equal(tokenTable.total, 1);
+    assert.equal(estimated, true);
+});
+
 test('readTextCompletionSections returns nothing when the pass was not seen', async () => {
     const { sections, tokenTable } = await readTextCompletionSections(null);
     assert.deepEqual(sections, []);

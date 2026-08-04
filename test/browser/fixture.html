@@ -32,7 +32,7 @@
     <script type="module">
         import { deactivate, init } from '/index.js';
         import { __setHostForTests } from '/src/host.js';
-        import { __setStoreForTests, createMemoryStore } from '/src/storage.js';
+        import { __setStoreForTests, createMemoryStore, saveCase, saveRun, saveSuite } from '/src/storage.js';
         import { mountRuntimeUi } from '/src/ui/runtime.js';
 
         const shellPanel = document.getElementById('fixture-extension-shell');
@@ -137,6 +137,11 @@
             ],
             selectedProfile: 'p1',
         };
+        context.extensionSettings.promptTags = {
+            activeProfile: 'Tagged',
+            activeProfileId: 'tag-1',
+            profiles: { Tagged: { id: 'tag-1', rules: {} } },
+        };
         globalThis.SillyTavern = { getContext: () => context };
 
         __setStoreForTests(createMemoryStore());
@@ -153,6 +158,32 @@
         // mountRuntimeUi returns the already-mounted controller, so the test can
         // drive the same availability path the extension uses after loadHost().
         globalThis.fixtureSetAvailability = value => mountRuntimeUi().setAvailability(value);
+        globalThis.fixtureSeedUnchecked = async () => {
+            const testCase = await saveCase({
+                id: 'fixture-unchecked-case',
+                name: 'Unchecked fixture case',
+                pins: { characterAvatar: 'tester.png' },
+            });
+            await saveSuite({
+                id: 'fixture-unchecked-suite',
+                name: 'Unchecked fixture suite',
+                caseIds: [testCase.id],
+                baselines: {},
+            });
+            await saveRun({
+                id: 'fixture-unchecked-run',
+                suiteId: 'fixture-unchecked-suite',
+                caseId: testCase.id,
+                caseName: testCase.name,
+                status: 'pass',
+                assertionResults: [{
+                    index: 0,
+                    type: 'wi-activated',
+                    pass: null,
+                    message: 'No lorebook activity was recorded for this run.',
+                }],
+            });
+        };
 
         init();
         await eventSource.emit(eventTypes.APP_READY);

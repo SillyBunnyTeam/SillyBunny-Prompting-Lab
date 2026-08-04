@@ -1,10 +1,12 @@
 import {
     ASSERTION,
     CASE_VERSION,
+    MAX_REGEX_LENGTH,
     RUN_VERSION,
     STATUS,
     SUITE_VERSION,
 } from './constants.js';
+import { ANCHOR_LENGTH } from './compare.js';
 
 /**
  * Pure data helpers for every stored object. No host imports: everything here
@@ -45,6 +47,39 @@ function integer(value, fallback, min = Number.MIN_SAFE_INTEGER, max = Number.MA
 
 function plainObject(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function normalizeVolatileSpan(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return null;
+    }
+    const stringFields = ['section', 'text', 'otherText', 'anchorBefore', 'anchorAfter', 'macro', 'class', 'why'];
+    const booleanFields = ['aboveBreakpoint'];
+    const output = {};
+    for (const key of stringFields) {
+        if (value[key] === undefined) {
+            continue;
+        }
+        if (typeof value[key] !== 'string') {
+            return null;
+        }
+        output[key] = key === 'anchorBefore' || key === 'anchorAfter'
+            ? value[key].slice(0, ANCHOR_LENGTH)
+            : value[key];
+    }
+    for (const key of booleanFields) {
+        if (value[key] === undefined) {
+            continue;
+        }
+        if (typeof value[key] !== 'boolean') {
+            return null;
+        }
+        output[key] = value[key];
+    }
+    if (typeof output.text !== 'string' || typeof output.otherText !== 'string') {
+        return null;
+    }
+    return output;
 }
 
 /* ------------------------------------------------------------------ pins */
@@ -145,10 +180,14 @@ export function validateAssertion(assertion) {
             if (!normalized.value) {
                 problems.push('Enter the text to look for.');
             } else if (normalized.mode === 'regex') {
-                try {
-                    new RegExp(normalized.value);
-                } catch (error) {
-                    problems.push(`That search pattern is not valid: ${error?.message ?? error}`);
+                if (normalized.value.length > MAX_REGEX_LENGTH) {
+                    problems.push(`That search pattern is too long. Keep it to ${MAX_REGEX_LENGTH} characters or fewer.`);
+                } else {
+                    try {
+                        new RegExp(normalized.value);
+                    } catch (error) {
+                        problems.push(`That search pattern is not valid: ${error?.message ?? error}`);
+                    }
                 }
             }
             break;
@@ -332,14 +371,16 @@ export function normalizeRun(value) {
                 .map(index => integer(index, -1, -1))
                 .filter(index => index >= 0),
             prefixHash: text(cache.prefixHash),
-            volatileSpans: list(cache.volatileSpans),
+            volatileSpans: list(cache.volatileSpans)
+                .map(item => normalizeVolatileSpan(item))
+                .filter(Boolean),
             source: text(cache.source, 'unknown') || 'unknown',
         },
         caveats: list(source.caveats).map(item => text(item)).filter(Boolean),
         assertionResults: list(source.assertionResults).map(result => ({
             index: integer(result?.index, 0, 0),
             type: text(result?.type),
-            pass: bool(result?.pass),
+            pass: result?.pass === null ? null : bool(result?.pass),
             actual: result?.actual ?? null,
             message: text(result?.message),
         })),

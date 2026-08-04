@@ -65,6 +65,27 @@ test('re-saving a run replaces its index entry rather than adding one', async ()
     assert.equal(runs[0].status, 'fail');
 });
 
+test('runs preserve unchecked results and bounded volatile spans through storage', async () => {
+    reset();
+    await storage.saveRun({
+        id: 'round-trip-run',
+        caseId: 'c1',
+        assertionResults: [{ pass: null, message: 'not measurable' }],
+        cache: {
+            volatileSpans: [{
+                text: 'old',
+                otherText: 'new',
+                anchorBefore: 'x'.repeat(40),
+                anchorAfter: 'y'.repeat(40),
+            }],
+        },
+    });
+    const loaded = await storage.getRun('round-trip-run');
+    assert.equal(loaded.assertionResults[0].pass, null);
+    assert.equal(loaded.cache.volatileSpans[0].anchorBefore.length, 24);
+    assert.equal(loaded.cache.volatileSpans[0].anchorAfter.length, 24);
+});
+
 test('pruneRuns keeps the newest runs and always keeps pinned ones', async () => {
     reset();
     for (let index = 1; index <= 6; index++) {
@@ -97,6 +118,26 @@ test('deleting a case removes its runs and run index', async () => {
     assert.equal(await storage.getCase(testCase.id), null);
     assert.equal(await storage.getRun('r1'), null);
     assert.deepEqual(await storage.listRuns(testCase.id), []);
+});
+
+test('deleting a case removes it and its baseline from every suite', async () => {
+    reset();
+    const testCase = await storage.saveCase(createCase({ name: 'Shared' }));
+    await storage.saveSuite(createSuite({
+        id: 'suite-a',
+        caseIds: [testCase.id, 'other'],
+        baselines: { [testCase.id]: 'run-a', other: 'run-other' },
+    }));
+    await storage.saveSuite(createSuite({
+        id: 'suite-b',
+        caseIds: [testCase.id],
+        baselines: { [testCase.id]: 'run-b' },
+    }));
+    await storage.deleteCase(testCase.id);
+    assert.deepEqual((await storage.getSuite('suite-a')).caseIds, ['other']);
+    assert.deepEqual((await storage.getSuite('suite-a')).baselines, { other: 'run-other' });
+    assert.deepEqual((await storage.getSuite('suite-b')).caseIds, []);
+    assert.deepEqual((await storage.getSuite('suite-b')).baselines, {});
 });
 
 test('stored objects are snapshots, not live references', async () => {

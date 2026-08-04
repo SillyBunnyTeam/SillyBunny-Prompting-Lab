@@ -1,4 +1,4 @@
-import { applyCase, getPresetName, hasUnsavedPresetEdits, findCharacterIndex, normalizeApiId, restoreState, snapshotState, willCreateChatFile } from './apply-state.js';
+import { applyCase, getPresetName, getSelectedProfileId, hasUnsavedPresetEdits, findCharacterIndex, normalizeApiId, resolveProfile, restoreState, snapshotState, willCreateChatFile } from './apply-state.js';
 import { captureOnce } from './capture.js';
 import { CAVEAT, STATUS } from './constants.js';
 import { ctxOf, getContext } from './host.js';
@@ -39,7 +39,10 @@ export function orderCasesByCharacter(cases) {
  * Checks a set of cases before anything is changed, so the user can be told
  * what will happen and what cannot run.
  */
-export async function preflight(cases, { context = getContext } = {}) {
+export async function preflight(cases, {
+    context = getContext,
+    chatFileChecker = willCreateChatFile,
+} = {}) {
     const blocked = [];
     const charactersWithoutChats = [];
     const seenAvatars = new Set();
@@ -47,16 +50,16 @@ export async function preflight(cases, { context = getContext } = {}) {
     for (const testCase of cases) {
         const avatar = testCase?.pins?.characterAvatar ?? '';
         if (!avatar) {
-            blocked.push({ caseId: testCase?.id, reason: 'No character is chosen for this test case.' });
+            blocked.push({ caseId: testCase?.id, caseName: testCase?.name ?? '', reason: 'No character is chosen for this test case.' });
             continue;
         }
         if (findCharacterIndex(context, avatar) < 0) {
-            blocked.push({ caseId: testCase?.id, reason: `The character "${avatar}" is not installed any more.` });
+            blocked.push({ caseId: testCase?.id, caseName: testCase?.name ?? '', reason: `The character "${avatar}" is not installed any more.` });
             continue;
         }
         if (!seenAvatars.has(avatar)) {
             seenAvatars.add(avatar);
-            if (await willCreateChatFile(context, avatar)) {
+            if (await chatFileChecker(context, avatar)) {
                 charactersWithoutChats.push(avatar);
             }
         }
@@ -80,7 +83,7 @@ function describeError(error) {
     };
 }
 
-function readEnvironment(hostRef, testCase, capture, integrations) {
+function readEnvironment(hostRef, capture, integrations) {
     // Resolved after the case has been applied, so these describe what was
     // actually measured rather than what was configured beforehand.
     const context = ctxOf(hostRef);
@@ -90,7 +93,7 @@ function readEnvironment(hostRef, testCase, capture, integrations) {
         apiType: capture?.apiType ?? 'cc',
         api: String(context?.mainApi ?? ''),
         model: String(context?.chatCompletionSettings?.openai_model ?? context?.getChatCompletionModel?.() ?? ''),
-        profileName: integrations?.profileName ?? '',
+        profileName: resolveProfile(hostRef, getSelectedProfileId(hostRef))?.name ?? '',
         presetName: getPresetName(hostRef, normalizeApiId(hostRef)),
         personaName: String(context?.name1 ?? ''),
         characterName: String(context?.characters?.[characterIndex]?.name ?? ''),
@@ -145,7 +148,7 @@ export async function runCase(testCase, {
             ...base,
             status: STATUS.PASS,
             durationMs: Date.now() - startedMs,
-            environment: readEnvironment(context, testCase, first, integrations),
+            environment: readEnvironment(context, first, integrations),
             capture: {
                 messages: first.messages,
                 combinedPrompt: first.combinedPrompt,

@@ -13,6 +13,211 @@ import { classifySource, CLASS_STABLE, CLASS_WHY, SEVERITY } from './vendor/vola
  * Pure: no host imports, so every rule is testable.
  */
 
+const CLAUDE_PROMPT_PLACEHOLDER = "Let's get started.";
+
+function cloneValue(value) {
+    try {
+        return structuredClone(value);
+    } catch {
+        try {
+            return JSON.parse(JSON.stringify(value));
+        } catch {
+            return value;
+        }
+    }
+}
+
+function messageContentParts(message, { includeName = true } = {}) {
+    const namePrefix = includeName && message?.name ? `${message.name}: ` : '';
+    if (typeof message?.content === 'string') {
+        return [{ type: 'text', text: `${namePrefix}${message.content}` }];
+    }
+    if (Array.isArray(message?.content)) {
+        return message.content.map((part) => {
+            const next = cloneValue(part);
+            if (next?.type === 'image_url') {
+                const imageData = next.image_url?.url ?? '';
+                return {
+                    type: 'image',
+                    source: {
+                        type: 'base64',
+                        media_type: imageData.split(';')[0]?.split(':')[1],
+                        data: imageData.split(',')[1],
+                    },
+                };
+            }
+            if (next?.type === 'text') {
+                next.text = `${namePrefix}${next.text || '\u200b'}`;
+            }
+            return next;
+        });
+    }
+    return [];
+}
+
+function parseJson(value) {
+    try {
+        return JSON.parse(value);
+    } catch {
+        return value;
+    }
+}
+
+function startsWithGroupName(text, names) {
+    if (typeof names?.startsWithGroupName === 'function') {
+        return names.startsWithGroupName(text);
+    }
+    return (Array.isArray(names?.groupNames) ? names.groupNames : [])
+        .some(name => String(text).startsWith(`${name}: `));
+}
+
+function addExampleName(message, names) {
+    if (message?.role !== 'system' || typeof message.content !== 'string') {
+        return message;
+    }
+    const next = { ...message };
+    if (next.name === 'example_user' && names?.userName
+        && !next.content.startsWith(`${names.userName}: `)) {
+        next.content = `${names.userName}: ${next.content}`;
+    }
+    if (next.name === 'example_assistant' && names?.charName
+        && !next.content.startsWith(`${names.charName}: `)
+        && !startsWithGroupName(next.content, names)) {
+        next.content = `${names.charName}: ${next.content}`;
+    }
+    return next;
+}
+
+/**
+ * Reproduces the message shape passed to SillyBunny's Claude converter.
+ * The cache walker runs after Claude has removed its leading system prompt,
+ * rewritten later system/tool messages, and merged adjacent turns. Work on
+ * clones so this analysis never changes a captured prompt.
+ */
+export function toClaudeShape(messages, options = {}) {
+    if (!Array.isArray(messages)) {
+        return [];
+    }
+    const useSysPrompt = options.useSysPrompt
+        ?? options.useSystemPrompt
+        ?? options.use_sysprompt
+        ?? true;
+    const useTools = options.useTools ?? options.use_tools ?? true;
+    const prefillString = options.prefillString ?? options.prefill ?? '';
+    const names = options.names ?? {};
+    const cloned = messages
+        .filter(message => message && typeof message === 'object')
+        .map(message => cloneValue(message));
+
+    if (useSysPrompt) {
+        let firstNonSystem = 0;
+        while (firstNonSystem < cloned.length && cloned[firstNonSystem]?.role === 'system') {
+            firstNonSystem += 1;
+        }
+        cloned.splice(0, firstNonSystem);
+        if (!cloned.length) {
+            cloned.push({
+                role: 'user',
+                content: options.placeholder ?? CLAUDE_PROMPT_PLACEHOLDER,
+            });
+        }
+    }
+
+    const converted = cloned.map((message) => {
+        const next = addExampleName({ ...message }, names);
+        const wasSystem = next.role === 'system';
+        if (next.role === 'tool') {
+            next.role = 'user';
+            next.content = [{
+                type: 'tool_result',
+                tool_use_id: next.tool_call_id,
+                content: cloneValue(next.content),
+            }];
+        } else if (next.role === 'assistant' && Array.isArray(next.tool_calls)) {
+            next.content = next.tool_calls.map(call => ({
+                type: 'tool_use',
+                id: call?.id,
+                name: call?.function?.name,
+                input: typeof call?.function?.arguments === 'string'
+                    ? parseJson(call.function.arguments)
+                    : cloneValue(call?.function?.arguments),
+            }));
+        } else {
+            if (wasSystem) {
+                delete next.name;
+            }
+            next.content = messageContentParts(next, { includeName: !wasSystem });
+        }
+        if (wasSystem) {
+            next.role = 'user';
+        }
+        delete next.name;
+        delete next.tool_calls;
+        delete next.tool_call_id;
+        return next;
+    });
+
+    // Anthropic requires assistant images to be carried by the following user
+    // turn. This happens before same-role messages are merged in the host.
+    for (let index = 0; index < converted.length; index += 1) {
+        const message = converted[index];
+        if (message?.role !== 'assistant' || !Array.isArray(message.content)) {
+            continue;
+        }
+        const images = message.content.filter(part => part?.type === 'image');
+        if (!images.length) {
+            continue;
+        }
+        let userIndex = index + 1;
+        while (userIndex < converted.length && converted[userIndex]?.role !== 'user') {
+            userIndex += 1;
+        }
+        if (userIndex >= converted.length) {
+            converted.splice(index + 1, 0, { role: 'user', content: [] });
+        }
+        converted[userIndex].content.push(...images);
+        message.content = message.content.filter(part => part?.type !== 'image');
+    }
+
+    if (prefillString) {
+        converted.push({
+            role: 'assistant',
+            content: [{ type: 'text', text: String(prefillString).trimEnd() }],
+        });
+    }
+
+    if (!useTools) {
+        for (const message of converted) {
+            for (const content of message.content ?? []) {
+                if (content?.type === 'tool_use') {
+                    content.type = 'text';
+                    content.text = JSON.stringify(content.input);
+                    delete content.id;
+                    delete content.name;
+                    delete content.input;
+                }
+                if (content?.type === 'tool_result') {
+                    content.type = 'text';
+                    content.text = content.content;
+                    delete content.tool_use_id;
+                    delete content.content;
+                }
+            }
+        }
+    }
+
+    const merged = [];
+    for (const message of converted) {
+        const previous = merged.at(-1);
+        if (previous?.role === message.role) {
+            previous.content.push(...message.content);
+        } else {
+            merged.push(message);
+        }
+    }
+    return merged;
+}
+
 /**
  * Finds the messages the server would mark as cache boundaries.
  *
@@ -144,6 +349,9 @@ export function explainSpan(span, { deps = {}, sourceText = '' } = {}) {
  * @param {object[]} options.volatileSpans pieces that differed between two builds
  * @param {number|null} options.cachingAtDepth configured depth, or null if unknown
  * @param {boolean} options.squashSystem whether SillyBunny merges system messages
+ * @param {boolean} options.useTools whether Claude tool content remains structured
+ * @param {string} options.prefillString assistant prefill appended by the host
+ * @param {object} options.names prompt names used for example messages
  * @param {function} options.hash stable hash for the cached prefix
  */
 export function analyzeCache({
@@ -155,8 +363,20 @@ export function analyzeCache({
     sections = [],
     sourceTexts = {},
     deps = {},
+    useSysPrompt = true,
+    useTools = true,
+    prefillString = '',
+    names = {},
 } = {}) {
-    const effective = squashSystem ? squashSystemMessages(messages) : messages;
+    // The server walks the converted Claude messages, not the ChatML capture.
+    // `squashSystem` remains accepted for callers from older records; role
+    // merging is now part of the Claude conversion in either mode.
+    const effective = toClaudeShape(messages, {
+        useSysPrompt,
+        useTools,
+        prefillString,
+        names,
+    });
     const known = Number.isInteger(cachingAtDepth) && cachingAtDepth >= 0;
     const breakpoints = known ? predictCacheBreakpoints(effective, cachingAtDepth) : [];
     const prefix = prefixText(effective, breakpoints);

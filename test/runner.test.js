@@ -66,6 +66,24 @@ test('runCase produces a passing record with capture data', async () => {
     assert.equal(run.error, null);
 });
 
+test('runCase records the selected connection profile name', async () => {
+    const context = {
+        ...makeContext(),
+        extensionSettings: {
+            connectionManager: {
+                profiles: [{ id: 'p2', name: 'Claude' }],
+                selectedProfile: 'p2',
+            },
+        },
+    };
+    const run = await runCase(createCase({ pins: { characterAvatar: 'aqua.png' } }), {
+        context,
+        captureFn: fakeCapture(),
+        applyFn: async () => ({ caveats: [] }),
+    });
+    assert.equal(run.environment.profileName, 'Claude');
+});
+
 test('runCase captures twice by default so volatile content can be spotted', async () => {
     let captures = 0;
     await runCase(createCase({ pins: { characterAvatar: 'aqua.png' } }), {
@@ -281,8 +299,28 @@ test('preflight separates runnable cases from ones that cannot run', async () =>
     const report = await preflight([good, missingCharacter, noCharacter], { context });
     assert.deepEqual(report.runnable.map(item => item.name), ['good']);
     assert.equal(report.blocked.length, 2);
+    assert.equal(report.blocked[0].caseName, 'gone');
+    assert.equal(report.blocked[1].caseName, 'blank');
     assert.match(report.blocked[0].reason, /not installed any more/);
     assert.match(report.blocked[1].reason, /No character is chosen/);
+});
+
+test('preflight accepts a chat-file checker and calls it once per avatar', async () => {
+    const context = makeContext();
+    let checks = 0;
+    const cases = [
+        createCase({ pins: { characterAvatar: 'aqua.png' } }),
+        createCase({ pins: { characterAvatar: 'aqua.png' } }),
+    ];
+    const report = await preflight(cases, {
+        context,
+        chatFileChecker: async () => {
+            checks += 1;
+            return false;
+        },
+    });
+    assert.equal(checks, 1);
+    assert.equal(report.runnable.length, 2);
 });
 
 test('preflight warns about unsaved preset edits when SillyBunny no longer offers the check', async () => {
@@ -296,7 +334,7 @@ test('preflight warns about unsaved preset edits when SillyBunny no longer offer
 
 test('preflight reports a clean preset panel without warning', async () => {
     const context = makeContext();
-    context.getPresetManager = () => ({ _checkDirty: () => false });
+    context.getPresetManager = () => ({ _dirty: false, _checkDirty: () => undefined });
     const report = await preflight([], { context });
     assert.equal(report.unsavedPresetEdits, false);
     assert.equal(report.unsavedPresetEditsCertain, true);
@@ -304,7 +342,7 @@ test('preflight reports a clean preset panel without warning', async () => {
 
 test('preflight reports genuinely unsaved preset edits', async () => {
     const context = makeContext();
-    context.getPresetManager = () => ({ _checkDirty: () => true });
+    context.getPresetManager = () => ({ _dirty: true, _checkDirty: () => undefined });
     const report = await preflight([], { context });
     assert.equal(report.unsavedPresetEdits, true);
     assert.equal(report.unsavedPresetEditsCertain, true);

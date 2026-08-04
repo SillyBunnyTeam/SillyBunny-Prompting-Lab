@@ -149,14 +149,14 @@ test('macroConfigDiffers copes with one side missing', () => {
 
 /* --------------------------------------------------------------- combined */
 
-test('collectIntegrations records both neighbours and notes a missing one', async () => {
+test('collectIntegrations records both neighbours without caveating optional absence', async () => {
     const context = contextWith({
         promptTags: { activeProfile: 'Tagged', profiles: { Tagged: { id: '1', rules: {} } } },
     });
     const collected = await collectIntegrations(context);
     assert.equal(collected.promptTags.profileName, 'Tagged');
     assert.equal(collected.macroEnhanced, null);
-    assert.ok(collected.caveats.includes('macro-enhanced-missing'));
+    assert.deepEqual(collected.caveats, []);
 });
 
 test('collectIntegrations is quiet when both neighbours are installed', async () => {

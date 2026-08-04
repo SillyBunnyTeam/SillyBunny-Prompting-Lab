@@ -1,4 +1,4 @@
-import { ASSERTION, SECTION_LABEL } from './constants.js';
+import { ASSERTION, MAX_REGEX_LENGTH, SECTION_LABEL } from './constants.js';
 
 /**
  * Checks a finished run against the expectations saved with a test case.
@@ -144,6 +144,13 @@ const EVALUATORS = {
         }
         let found = false;
         if (assertion.mode === 'regex') {
+            if (String(assertion.value ?? '').length > MAX_REGEX_LENGTH) {
+                return {
+                    pass: null,
+                    actual: null,
+                    message: `That search pattern is too long. Keep it to ${MAX_REGEX_LENGTH} characters or fewer.`,
+                };
+            }
             try {
                 found = new RegExp(assertion.value).test(text);
             } catch (error) {

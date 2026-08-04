@@ -78,11 +78,16 @@ export function collapseUnchanged(parts, { context = 60 } = {}) {
 export function diffSection(baselineRun, currentRun, sectionId, options = {}) {
     const before = baselineRun?.capture?.sections?.find(section => section.id === sectionId);
     const after = currentRun?.capture?.sections?.find(section => section.id === sectionId);
+    const volatileSpans = (options.volatileSpans ?? [])
+        .filter(span => !span?.section || span.section === sectionId);
     return {
         id: sectionId,
         baselineTokens: Number(before?.tokens ?? 0),
         currentTokens: Number(after?.tokens ?? 0),
-        parts: diffText(before?.content ?? '', after?.content ?? '', options),
+        parts: diffText(before?.content ?? '', after?.content ?? '', {
+            ...options,
+            volatileSpans,
+        }),
         onlyInBaseline: Boolean(before) && !after,
         onlyInCurrent: !before && Boolean(after),
     };

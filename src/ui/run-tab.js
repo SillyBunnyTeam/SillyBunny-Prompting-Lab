@@ -2,6 +2,7 @@ import { CAVEAT_TEXT, STATUS, STATUS_LABEL } from '../constants.js';
 import { button, element, emptyState, errorMessage, formatTokens, replace, statusRegion } from '../dom.js';
 import { loadHost } from '../host.js';
 import * as lab from '../lab.js';
+import { willCreateChatFile } from '../apply-state.js';
 import { dismissWarning, isWarningDismissed } from '../settings.js';
 import * as storage from '../storage.js';
 
@@ -13,6 +14,41 @@ function statusChip(status) {
         className: `sbpl-chip sbpl-chip-${status}`,
         text: STATUS_LABEL[status] ?? status,
     });
+}
+
+export function describeRun(run) {
+    if (run.status === STATUS.ERROR) {
+        return run.error?.message ?? 'Something went wrong.';
+    }
+    if (run.status === STATUS.SKIPPED) {
+        return 'Skipped because the run was stopped.';
+    }
+    const failed = (run.assertionResults ?? []).filter(result => result.pass === false);
+    const unchecked = (run.assertionResults ?? []).filter(result => result.pass === null);
+    const details = [];
+    if (failed.length) {
+        details.push(failed.map(result => result.message).join(' '));
+    }
+
+    const diff = run.diffVsBaseline;
+    const changed = Boolean(diff && (
+        diff.changedSections?.length
+        || diff.addedSections?.length
+        || diff.removedSections?.length
+    ));
+    if (diff && (changed || run.status === STATUS.CHANGED)) {
+        details.push(diff.summary ?? 'This prompt differs from the baseline.');
+    } else if (diff) {
+        details.push('Matches the baseline.');
+    } else if (!diff) {
+        details.push('No baseline yet. Set this run as the baseline to compare against later.');
+    }
+
+    if (unchecked.length) {
+        const label = `${unchecked.length} check${unchecked.length === 1 ? ' was' : 's were'} unchecked:`;
+        details.push(`${label} ${unchecked.map(result => result.message).join(' ')}`);
+    }
+    return details.filter(Boolean).join(' ') || 'Matches the baseline.';
 }
 
 export function createRunTab({ onRunFinished = null } = {}) {
@@ -32,6 +68,14 @@ export function createRunTab({ onRunFinished = null } = {}) {
     let controller = null;
     let lastResult = null;
     let running = false;
+    const chatFileChecks = new Map();
+
+    function cachedChatFileCheck(context, avatar) {
+        if (!chatFileChecks.has(avatar)) {
+            chatFileChecks.set(avatar, willCreateChatFile(context, avatar));
+        }
+        return chatFileChecks.get(avatar);
+    }
 
     async function refreshSuites() {
         suites = await storage.listSuites();
@@ -49,6 +93,15 @@ export function createRunTab({ onRunFinished = null } = {}) {
         } else {
             activeSuite = null;
         }
+        if (!activeSuite) {
+            lastResult = null;
+        } else if (!lastResult) {
+            const storedResult = await loadStoredResult(activeSuite);
+            if (storedResult) {
+                lastResult = storedResult;
+                renderResults(storedResult);
+            }
+        }
         suiteSelect.disabled = suites.length === 0 || running;
         updateControls();
         await showPreflight();
@@ -61,6 +114,74 @@ export function createRunTab({ onRunFinished = null } = {}) {
         baselineButton.hidden = !lastResult || running;
     }
 
+    function summarizeRuns(runs) {
+        const summary = {
+            [STATUS.PASS]: 0,
+            [STATUS.CHANGED]: 0,
+            [STATUS.FAIL]: 0,
+            [STATUS.ERROR]: 0,
+            [STATUS.SKIPPED]: 0,
+            total: runs.length,
+        };
+        for (const run of runs) {
+            if (run?.status in summary) {
+                summary[run.status] += 1;
+            }
+        }
+        return summary;
+    }
+
+    /** Load one coherent stored execution when the tab opens. */
+    async function loadStoredResult(suite) {
+        const candidates = [];
+        for (const caseId of suite?.caseIds ?? []) {
+            for (const entry of await storage.listRuns(caseId)) {
+                const run = await storage.getRun(entry.id);
+                if (run?.suiteId === suite.id) {
+                    candidates.push(run);
+                }
+            }
+        }
+        if (!candidates.length) {
+            return null;
+        }
+
+        // A suite run writes one record per case. Select the newest suiteRunId
+        // as a unit; independently selecting each case's newest record can
+        // combine unrelated or aborted executions and make them look like one
+        // baseline candidate.
+        const groups = new Map();
+        for (const run of candidates) {
+            const key = run.suiteRunId || `legacy:${run.id}`;
+            if (!groups.has(key)) {
+                groups.set(key, []);
+            }
+            groups.get(key).push(run);
+        }
+        const [, grouped] = [...groups.entries()].sort(([, left], [, right]) => {
+            const latest = runs => runs.reduce((value, run) => Math.max(value, Date.parse(run.startedAt) || 0), 0);
+            return latest(right) - latest(left);
+        })[0] ?? [];
+        if (!grouped?.length) {
+            return null;
+        }
+        const latestByCase = new Map();
+        for (const run of grouped) {
+            const previous = latestByCase.get(run.caseId);
+            if (!previous || String(run.startedAt ?? '') > String(previous.startedAt ?? '')) {
+                latestByCase.set(run.caseId, run);
+            }
+        }
+        const runs = [...latestByCase.values()];
+        return {
+            suiteRunId: runs[0].suiteRunId,
+            runs,
+            restoreProblems: [],
+            aborted: false,
+            summary: summarizeRuns(runs),
+        };
+    }
+
     async function showPreflight() {
         if (!warningsHost) {
             return;
@@ -71,7 +192,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
         }
         let report;
         try {
-            report = await lab.preflightSuite(activeSuite);
+            report = await lab.preflightSuite(activeSuite, { chatFileChecker: cachedChatFileCheck });
         } catch (error) {
             warningsHost.append(warning(`This suite could not be checked: ${errorMessage(error)}`));
             return;
@@ -143,7 +264,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
 
         if (restoreProblems?.length) {
             resultsHost.append(warning(
-                `Your settings could not be fully put back: ${restoreProblems.join('; ')}. Check your character, persona, preset and connection profile.`,
+                `Your settings and original character/group chat could not be fully put back: ${restoreProblems.join('; ')}. Check your character, group chat, persona, preset and connection profile.`,
             ));
         }
 
@@ -180,26 +301,6 @@ export function createRunTab({ onRunFinished = null } = {}) {
         }
     }
 
-    function describeRun(run) {
-        if (run.status === STATUS.ERROR) {
-            return run.error?.message ?? 'Something went wrong.';
-        }
-        if (run.status === STATUS.SKIPPED) {
-            return 'Skipped because the run was stopped.';
-        }
-        const failed = (run.assertionResults ?? []).filter(result => result.pass === false);
-        if (failed.length) {
-            return failed.map(result => result.message).join(' ');
-        }
-        if (run.status === STATUS.CHANGED) {
-            return run.diffVsBaseline?.summary ?? 'This prompt differs from the baseline.';
-        }
-        if (!run.diffVsBaseline) {
-            return 'No baseline yet. Set this run as the baseline to compare against later.';
-        }
-        return 'Matches the baseline.';
-    }
-
     async function start() {
         if (running || !activeSuite) {
             return;
@@ -215,9 +316,12 @@ export function createRunTab({ onRunFinished = null } = {}) {
 
         const host = await loadHost();
         try {
+            const report = await lab.preflightSuite(activeSuite, { chatFileChecker: cachedChatFileCheck });
             const result = await lab.runSuite(activeSuite, {
                 signal: controller.signal,
                 host,
+                cases: report.runnable,
+                blocked: report.blocked,
                 onProgress: (event) => {
                     progressBar.max = event.total;
                     if (event.status === 'running') {
@@ -242,6 +346,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
             progressBar.hidden = true;
             progressLabel.textContent = '';
             updateControls();
+            chatFileChecks.clear();
             await refreshSuites();
         }
     }
@@ -299,7 +404,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
             if (!root) {
                 build();
             }
-            if (!suites.length) {
+            if (!suites.length || !suiteSelect.options.length) {
                 void refreshSuites();
             }
             if (!suites.length && !activeSuite) {

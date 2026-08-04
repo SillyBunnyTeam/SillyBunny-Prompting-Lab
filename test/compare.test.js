@@ -71,23 +71,31 @@ test('a removed section is reported with a negative delta', () => {
 });
 
 test('normalizeVolatile masks the parts that change every run', () => {
-    const masked = normalizeVolatile('Rolled a 4 today', [{ text: '4', macro: 'roll' }]);
+    const masked = normalizeVolatile('Rolled a 4 today', [{
+        text: '4',
+        anchorBefore: 'Rolled a ',
+        anchorAfter: ' today',
+        macro: 'roll',
+    }]);
     assert.equal(masked, 'Rolled a ⟨macro:roll⟩ today');
 });
 
-test('normalizeVolatile replaces longer spans before shorter ones', () => {
+test('normalizeVolatile treats an unanchored span as the whole section', () => {
     const masked = normalizeVolatile('abcabc', [{ text: 'a' }, { text: 'abc' }]);
-    assert.equal(masked, '⟨changes each time⟩⟨changes each time⟩');
+    assert.equal(masked, '⟨changes each time⟩');
 });
 
-test('normalizeVolatile does not let one placeholder be chewed up by the next span', () => {
-    // The placeholder wording contains letters that a later span could match.
-    const masked = normalizeVolatile('roll a', [{ text: 'roll' }, { text: 'a' }]);
-    assert.equal(masked, '⟨changes each time⟩ ⟨changes each time⟩');
+test('normalizeVolatile leaves a malformed empty span alone', () => {
+    assert.equal(normalizeVolatile('roll a', [{ text: '' }]), 'roll a');
 });
 
 test('normalizeVolatile treats span text literally, not as a search pattern', () => {
-    const masked = normalizeVolatile('cost (3.50) today', [{ text: '(3.50)', macro: 'price' }]);
+    const masked = normalizeVolatile('cost (3.50) today', [{
+        text: '(3.50)',
+        anchorBefore: 'cost ',
+        anchorAfter: ' today',
+        macro: 'price',
+    }]);
     assert.equal(masked, 'cost ⟨macro:price⟩ today');
 });
 
@@ -111,7 +119,13 @@ test('a random value does not report itself as a regression', () => {
 test('a genuine edit is still caught when normalization is on', () => {
     const before = runWith([{ id: 'main', content: 'You rolled 3. Be kind.', tokens: 8 }]);
     const after = runWith([{ id: 'main', content: 'You rolled 7. Be cruel.', tokens: 8 }]);
-    const result = compareRuns(after, before, { volatileSpans: [{ text: '3' }, { text: '7' }], normalize: true });
+    const result = compareRuns(after, before, {
+        volatileSpans: [
+            { text: '3', anchorBefore: 'You rolled ', anchorAfter: '. Be ' },
+            { text: '7', anchorBefore: 'You rolled ', anchorAfter: '. Be ' },
+        ],
+        normalize: true,
+    });
     assert.deepEqual(result.changedSections, ['main']);
 });
 
@@ -183,6 +197,35 @@ test('a volatile value is masked by the unchanged text around it', () => {
     assert.match(a, /Lucky number: ⟨changes each time⟩/);
 });
 
+test('leading and trailing anchored values normalize unseen values', () => {
+    const trailing = [{ text: 'old', anchorBefore: 'Roll: ' }];
+    assert.equal(
+        normalizeVolatile('Roll: 903', trailing),
+        normalizeVolatile('Roll: 41', trailing),
+    );
+    const leading = [{ text: 'old', anchorAfter: ' is the result.' }];
+    assert.equal(
+        normalizeVolatile('903 is the result.', leading),
+        normalizeVolatile('41 is the result.', leading),
+    );
+});
+
+test('volatile spans are scoped to their section during comparison', () => {
+    const before = runWith([
+        { id: 'main', content: 'Roll: 3', tokens: 2 },
+        { id: 'chatHistory', content: 'stable', tokens: 1 },
+    ]);
+    const after = runWith([
+        { id: 'main', content: 'Roll: 7', tokens: 2 },
+        { id: 'chatHistory', content: 'edited', tokens: 1 },
+    ]);
+    const result = compareRuns(after, before, {
+        volatileSpans: [{ section: 'main', text: '3', otherText: '7' }],
+        normalize: true,
+    });
+    assert.deepEqual(result.changedSections, ['chatHistory']);
+});
+
 test('anchored masking still leaves a genuine edit visible', () => {
     const spans = [{
         text: '215',
@@ -192,6 +235,17 @@ test('anchored masking still leaves a genuine edit visible', () => {
     const a = normalizeVolatile('Lucky number: 903.\nBe kind.', spans);
     const b = normalizeVolatile('Lucky number: 41.\nBe cruel.', spans);
     assert.notEqual(a, b);
+});
+
+test('anchored masking does not hide the same value outside its boundary', () => {
+    const spans = [{
+        text: '215',
+        anchorBefore: 'Lucky number: ',
+        anchorAfter: '. End.',
+    }];
+    const before = normalizeVolatile('Unrelated 215. Lucky number: 215. End.', spans);
+    const after = normalizeVolatile('Unrelated 487. Lucky number: 903. End.', spans);
+    assert.notEqual(before, after);
 });
 
 test('findVolatileSpans records the unchanged text around the value', () => {

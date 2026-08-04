@@ -28,8 +28,8 @@ export function normalizeSettings(value) {
     return {
         schemaVersion: SETTINGS_VERSION,
         lastTab: TAB_VALUES.has(source.lastTab) ? source.lastTab : DEFAULT_SETTINGS.lastTab,
-        manualCachingAtDepth: Number.isInteger(Number(depth)) && Number(depth) >= 0
-            ? Number(depth)
+        manualCachingAtDepth: Number.isInteger(depth) && depth >= 0
+            ? depth
             : null,
         runRetention: integer(source.runRetention, DEFAULT_SETTINGS.runRetention, 1, 200),
         abMaxTokens: integer(source.abMaxTokens, DEFAULT_SETTINGS.abMaxTokens, 16, 4096),

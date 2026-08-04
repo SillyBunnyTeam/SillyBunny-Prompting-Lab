@@ -108,9 +108,9 @@ export function createSettingsTab({ onChanged = null } = {}) {
                     await reload();
                     onChanged?.();
                 }, { className: 'menu_button sbpl-button' }));
-                embedHost.append(list);
                 list.append(item);
             }
+            embedHost.append(list);
         } else {
             embedHost.append(element('p', {
                 className: 'sbpl-case-meta',

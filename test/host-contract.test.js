@@ -64,7 +64,7 @@ test('SillyBunny exposes the host contracts used by Prompting Lab', {
 }, async () => {
     assert.equal(await available(), true, `SillyBunny checkout not found at ${hostRoot}`);
 
-    const [script, openai, tokenCounts, utils, context, events, lib, converters, shared, indexHtml] = await Promise.all([
+    const [script, openai, tokenCounts, utils, context, events, lib, converters, shared, indexHtml, presetManager] = await Promise.all([
         readFile(path.join(hostRoot, 'public/script.js'), 'utf8'),
         readFile(path.join(hostRoot, 'public/scripts/openai.js'), 'utf8'),
         readFile(path.join(hostRoot, 'public/scripts/prompt-token-counts.js'), 'utf8'),
@@ -75,6 +75,7 @@ test('SillyBunny exposes the host contracts used by Prompting Lab', {
         readFile(path.join(hostRoot, 'src/prompt-converters.js'), 'utf8'),
         readFile(path.join(hostRoot, 'public/scripts/extensions/shared.js'), 'utf8'),
         readFile(path.join(hostRoot, 'public/index.html'), 'utf8'),
+        readFile(path.join(hostRoot, 'public/scripts/preset-manager.js'), 'utf8'),
     ]);
 
     await test('Generate still accepts a dry-run flag', () => {
@@ -135,6 +136,10 @@ test('SillyBunny exposes the host contracts used by Prompting Lab', {
             'saveSettingsDebounced',
             'getPresetManager',
             'characters',
+            'groups',
+            'openCharacterChat',
+            'openGroupChat',
+            'closeCurrentChat',
         ]) {
             assert.match(context, new RegExp(`\\b${api}\\b`), `context.${api} is missing`);
         }
@@ -175,6 +180,27 @@ test('SillyBunny exposes the host contracts used by Prompting Lab', {
             'b29f7070',
             'cachingAtDepthForClaude changed. Re-check src/cache-analyzer.js against it, then update this fingerprint.',
         );
+    });
+
+    await test('the Claude conversion blocks still match the cache model', () => {
+        const body = functionBody(converters, 'convertClaudeMessages');
+        assert.ok(body, 'convertClaudeMessages could not be found');
+        assert.match(body, /if\s*\(\s*useSysPrompt\s*\)/, 'system prompt handling changed');
+        assert.match(body, /messages\.splice\(0,\s*i\)/, 'leading system messages are no longer removed');
+        assert.match(body, /message\.role\s*=\s*'user'/, 'internal system messages are no longer rewritten');
+        assert.match(body, /mergedMessages/, 'same-role messages are no longer merged');
+        assert.match(body, /content\.push\(\.\.\.message\.content\)/, 'merged message content order changed');
+        const fingerprint = body.replace(/\/\/[^\n]*/g, '').replace(/\s+/g, '');
+        assert.equal(
+            hash(fingerprint),
+            'a79cf062',
+            'convertClaudeMessages changed. Re-check src/cache-analyzer.js against it, then update this fingerprint.',
+        );
+    });
+
+    await test('preset dirty checks expose their side-effect state', () => {
+        assert.match(presetManager, /_checkDirty\(\{\s*force\s*=\s*false\s*\}\s*=\s*\{\}\)/);
+        assert.match(presetManager, /this\._dirty\s*=\s*dirty/);
     });
 
     await test('the extension settings host elements exist', () => {

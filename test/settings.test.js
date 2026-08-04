@@ -43,9 +43,26 @@ test('normalizeSettings clamps numbers into supported ranges', () => {
 test('normalizeSettings only accepts a whole, non-negative caching depth', () => {
     assert.equal(normalizeSettings({ manualCachingAtDepth: 2 }).manualCachingAtDepth, 2);
     assert.equal(normalizeSettings({ manualCachingAtDepth: 0 }).manualCachingAtDepth, 0);
+    assert.equal(normalizeSettings({ manualCachingAtDepth: null }).manualCachingAtDepth, null);
+    assert.equal(normalizeSettings({ manualCachingAtDepth: '' }).manualCachingAtDepth, null);
+    assert.equal(normalizeSettings({ manualCachingAtDepth: '2' }).manualCachingAtDepth, null);
     assert.equal(normalizeSettings({ manualCachingAtDepth: -1 }).manualCachingAtDepth, null);
     assert.equal(normalizeSettings({ manualCachingAtDepth: 1.5 }).manualCachingAtDepth, null);
     assert.equal(normalizeSettings({ manualCachingAtDepth: 'deep' }).manualCachingAtDepth, null);
+});
+
+test('normalizing settings is idempotent across storage round-trips', () => {
+    const inputs = [
+        {},
+        { manualCachingAtDepth: null },
+        { manualCachingAtDepth: 0 },
+        { manualCachingAtDepth: 4 },
+        { manualCachingAtDepth: '4' },
+    ];
+    for (const input of inputs) {
+        const once = normalizeSettings(input);
+        assert.deepEqual(normalizeSettings(once), once);
+    }
 });
 
 test('normalizeSettings rejects an unknown tab and non-true dismissals', () => {

@@ -3,6 +3,7 @@ import {
     EXPORT_VERSION,
     MAX_EXPORT_BYTES,
     MAX_EXPORT_WITH_BASELINES_BYTES,
+    MAX_REGEX_LENGTH,
 } from './constants.js';
 import { migrateCase, migrateRun, migrateSuite, newId, normalizeCase, normalizeSuite } from './schema.js';
 
@@ -96,6 +97,16 @@ export function parseImport(text) {
     }
     if (version > EXPORT_VERSION) {
         throw new Error('That file was made by a newer version of Prompting Lab. Update the extension, then import it again.');
+    }
+
+    const hasOversizedRegex = (Array.isArray(payload.cases) ? payload.cases : [])
+        .some(item => (Array.isArray(item?.assertions) ? item.assertions : [])
+            .some(assertion => assertion?.type === 'content-match'
+                && assertion?.mode === 'regex'
+                && typeof assertion?.value === 'string'
+                && assertion.value.length > MAX_REGEX_LENGTH));
+    if (hasOversizedRegex) {
+        throw new Error(`That file contains a search pattern longer than the ${MAX_REGEX_LENGTH}-character limit.`);
     }
 
     const suite = migrateSuite(payload.suite);

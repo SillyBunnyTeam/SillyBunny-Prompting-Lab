@@ -175,8 +175,16 @@ export function readChatCompletionSections(host, promptManager) {
  * Builds the text-completion section list. The pieces arrive already separated
  * on GENERATE_BEFORE_COMBINE_PROMPTS, so each one is counted individually.
  */
-export async function readTextCompletionSections(beforeCombine) {
+export async function readTextCompletionSections(beforeCombine, finalPrompt = null) {
     if (!beforeCombine) {
+        if (typeof finalPrompt === 'string') {
+            const total = await countTokens(finalPrompt);
+            return {
+                sections: [],
+                tokenTable: { total: total ?? 0, perSection: {} },
+                estimated: total === null,
+            };
+        }
         return { sections: [], tokenTable: { total: 0, perSection: {} }, estimated: false };
     }
     const sections = [];
@@ -201,6 +209,17 @@ export async function readTextCompletionSections(beforeCombine) {
     for (const section of sections) {
         perSection[section.id] = section.tokens;
     }
+    let totalCounted = null;
+    if (typeof finalPrompt === 'string') {
+        totalCounted = await countTokens(finalPrompt);
+    }
+    if (totalCounted !== null) {
+        total = totalCounted;
+    } else {
+        // Section token counts do not include the tokenizer's join/separator
+        // behavior, so a summed total is explicitly an estimate.
+        estimated = true;
+    }
     return { sections, tokenTable: { total, perSection }, estimated };
 }
 
@@ -221,6 +240,10 @@ export function createCaptureSession(hostRef = getContext) {
         ccMessages: null,
         beforeCombine: null,
         combinedPrompt: null,
+        useSysPrompt: null,
+        useTools: null,
+        prefillString: '',
+        promptNames: null,
         wiPasses: [],
         cacheScope: null,
     };
@@ -246,6 +269,26 @@ export function createCaptureSession(hostRef = getContext) {
             state.dryRun = Boolean(dryRun);
         }
         state.cacheScope = generateData?.cacheScope ?? null;
+        if (typeof generateData?.use_sysprompt === 'boolean') {
+            state.useSysPrompt = generateData.use_sysprompt;
+        }
+        if (typeof generateData?.use_tools === 'boolean') {
+            state.useTools = generateData.use_tools;
+        } else if (Array.isArray(generateData?.tools)) {
+            state.useTools = generateData.tools.length > 0;
+        }
+        if (typeof generateData?.assistant_prefill === 'string') {
+            state.prefillString = generateData.assistant_prefill;
+        }
+        if (generateData?.char_name || generateData?.user_name || Array.isArray(generateData?.group_names)) {
+            state.promptNames = {
+                charName: String(generateData.char_name ?? ''),
+                userName: String(generateData.user_name ?? ''),
+                groupNames: Array.isArray(generateData.group_names)
+                    ? generateData.group_names.map(String)
+                    : [],
+            };
+        }
         if (Array.isArray(generateData?.prompt)) {
             state.generateData = { messages: cloneMessages(generateData.prompt) };
         } else if (typeof generateData?.prompt === 'string') {
@@ -370,6 +413,9 @@ export async function captureOnce({ userMessage = '', context = getContext, host
     const live = ctxOf(hostRef);
     const apiType = live.mainApi === 'openai' ? 'cc' : 'tc';
 
+    const messages = state.ccMessages ?? state.generateData?.messages ?? null;
+    const combinedPrompt = state.combinedPrompt ?? state.generateData?.prompt ?? null;
+
     let sections = [];
     let tokenTable = { total: 0, perSection: {} };
 
@@ -378,16 +424,13 @@ export async function captureOnce({ userMessage = '', context = getContext, host
         sections = read.sections;
         tokenTable = read.tokenTable;
     } else {
-        const read = await readTextCompletionSections(state.beforeCombine);
+        const read = await readTextCompletionSections(state.beforeCombine, combinedPrompt);
         sections = read.sections;
         tokenTable = read.tokenTable;
         if (read.estimated) {
             caveats.push(CAVEAT.TOKENIZER_FALLBACK);
         }
     }
-
-    const messages = state.ccMessages ?? state.generateData?.messages ?? null;
-    const combinedPrompt = state.combinedPrompt ?? state.generateData?.prompt ?? null;
 
     if (!messages && !combinedPrompt) {
         throw new Error('Prompting Lab did not receive a prompt from SillyBunny. Check that a character is selected and that the connection settings are complete.');
@@ -401,6 +444,10 @@ export async function captureOnce({ userMessage = '', context = getContext, host
         tokenTable,
         wiPasses: state.wiPasses,
         cacheScope: state.cacheScope,
+        useSysPrompt: state.useSysPrompt,
+        useTools: state.useTools,
+        prefillString: state.prefillString,
+        promptNames: state.promptNames,
         sourceTexts: collectSourceTexts(live),
         caveats,
     };

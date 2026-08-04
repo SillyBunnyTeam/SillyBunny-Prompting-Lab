@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { makeRunFixture } from './helpers/stub-context.js';
 
-const { ASSERTION } = await import('../src/constants.js');
+const { ASSERTION, MAX_REGEX_LENGTH } = await import('../src/constants.js');
 const {
     evaluateAssertion,
     evaluateAssertions,
@@ -154,6 +154,16 @@ test('content-match explains an invalid search pattern instead of failing the ru
     const result = evaluateAssertion({ type: ASSERTION.CONTENT_MATCH, mode: 'regex', value: '([' }, run());
     assert.equal(result.pass, null);
     assert.match(result.message, /not valid/);
+});
+
+test('content-match leaves an oversized regex unchecked', () => {
+    const result = evaluateAssertion({
+        type: ASSERTION.CONTENT_MATCH,
+        mode: 'regex',
+        value: 'a'.repeat(MAX_REGEX_LENGTH + 1),
+    }, run());
+    assert.equal(result.pass, null);
+    assert.match(result.message, /too long/);
 });
 
 test('content-match reports a missing section rather than passing', () => {

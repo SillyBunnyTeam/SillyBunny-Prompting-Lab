@@ -108,6 +108,19 @@ export async function deleteCase(id) {
         await getStore().removeItem(`${STORE_PREFIX.RUN}${run.id}`);
     }
     await getStore().removeItem(`${INDEX_KEY.RUNS}${id}`);
+
+    // A case can belong to more than one suite. Remove both its membership
+    // and any baseline pointer everywhere so deleting it cannot leave stale
+    // references that later resurrect the case or its run.
+    for (const suite of await listSuites()) {
+        const baselines = { ...(suite.baselines ?? {}) };
+        const hadBaseline = Object.prototype.hasOwnProperty.call(baselines, id);
+        delete baselines[id];
+        const caseIds = (suite.caseIds ?? []).filter(caseId => caseId !== id);
+        if (hadBaseline || caseIds.length !== (suite.caseIds ?? []).length) {
+            await saveSuite({ ...suite, caseIds, baselines });
+        }
+    }
 }
 
 /* -------------------------------------------------------------- suites */

@@ -1,6 +1,7 @@
 import { SECTION_LABEL, STATUS_LABEL } from '../constants.js';
 import { button, element, emptyState, errorMessage, formatTokens, replace, statusRegion } from '../dom.js';
 import { collapseUnchanged, diffSection, isUnchanged, PART } from '../diff.js';
+import { macroConfigDiffers } from '../integrations/macroenhanced.js';
 import * as lab from '../lab.js';
 import { getSettings, updateSettings } from '../settings.js';
 import * as storage from '../storage.js';
@@ -168,9 +169,7 @@ export function createDiffTab() {
                 differences.push(`${label}: ${before} → ${after}`);
             }
         }
-        const macroBefore = JSON.stringify(baseline.environment?.macroEnhanced ?? null);
-        const macroAfter = JSON.stringify(current.environment?.macroEnhanced ?? null);
-        if (macroBefore !== macroAfter) {
+        if (macroConfigDiffers(baseline.environment?.macroEnhanced ?? null, current.environment?.macroEnhanced ?? null)) {
             differences.push('The Macro Enhanced configuration changed between these runs.');
         }
         const tagsBefore = baseline.environment?.promptTagsProfile?.profileName ?? '';

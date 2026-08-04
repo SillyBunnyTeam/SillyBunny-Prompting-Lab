@@ -8,6 +8,7 @@ const {
     predictCacheBreakpoints,
     prefixText,
     squashSystemMessages,
+    toClaudeShape,
 } = await import('../src/cache-analyzer.js');
 
 /**
@@ -138,6 +139,7 @@ test('a volatile span inside the cached part is flagged', () => {
         messages,
         volatileSpans: [{ section: 'main', text: 'Tuesday', otherText: 'Wednesday' }],
         cachingAtDepth: 0,
+        useSysPrompt: false,
         hash: text => text.length,
     });
     assert.equal(report.source, 'manual');
@@ -173,16 +175,118 @@ test('nothing is called cached when the depth is unknown', () => {
     assert.equal(report.prefixHash, '');
 });
 
-test('the report can merge system messages first', () => {
+test('Claude conversion changes cache boundaries and prefix content', () => {
     const messages = [
         { role: 'system', content: 'a' },
         { role: 'system', content: 'b' },
         { role: 'user', content: 'hi' },
     ];
-    const merged = analyzeCache({ messages, cachingAtDepth: 1, squashSystem: true, hash: t => t.length });
-    const unmerged = analyzeCache({ messages, cachingAtDepth: 1, squashSystem: false, hash: t => t.length });
-    assert.equal(merged.squashApplied, true);
-    assert.notDeepEqual(merged.predictedBreakpoints, unmerged.predictedBreakpoints);
+    const report = analyzeCache({ messages, cachingAtDepth: 0, hash: t => t.length });
+    assert.deepEqual(report.predictedBreakpoints, [0]);
+    assert.equal(report.prefixHash, '2');
+});
+
+test('toClaudeShape removes leading systems when a Claude system prompt is enabled', () => {
+    const shaped = toClaudeShape([
+        { role: 'system', content: 'rules' },
+        { role: 'user', content: 'hello' },
+    ], { useSysPrompt: true });
+    assert.deepEqual(shaped, [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }]);
+});
+
+test('toClaudeShape rewrites internal systems and merges same-role content', () => {
+    const shaped = toClaudeShape([
+        { role: 'user', content: 'one' },
+        { role: 'system', content: 'two' },
+        { role: 'user', content: 'three' },
+    ], { useSysPrompt: false });
+    assert.deepEqual(shaped, [{
+        role: 'user',
+        content: [
+            { type: 'text', text: 'one' },
+            { type: 'text', text: 'two' },
+            { type: 'text', text: 'three' },
+        ],
+    }]);
+});
+
+test('toClaudeShape keeps named message text in the Claude prefix', () => {
+    assert.deepEqual(
+        toClaudeShape([
+            { role: 'assistant', name: 'Aqua', content: 'hello' },
+            { role: 'user', name: 'Me', content: [{ type: 'text', text: 'reply' }] },
+        ], { useSysPrompt: false }),
+        [{
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Aqua: hello' }],
+        }, {
+            role: 'user',
+            content: [{ type: 'text', text: 'Me: reply' }],
+        }],
+    );
+});
+
+test('toClaudeShape handles an all-system prompt with the host placeholder', () => {
+    assert.deepEqual(
+        toClaudeShape([{ role: 'system', content: 'only rules' }], { useSysPrompt: true }),
+        [{ role: 'user', content: [{ type: 'text', text: "Let's get started." }] }],
+    );
+});
+
+test('toClaudeShape never mutates captured messages', () => {
+    const messages = [
+        { role: 'system', content: 'rules' },
+        { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+    ];
+    const before = structuredClone(messages);
+    toClaudeShape(messages, { useSysPrompt: true });
+    assert.deepEqual(messages, before);
+});
+
+test('toClaudeShape relocates assistant images and appends an assistant prefill', () => {
+    const shaped = toClaudeShape([
+        { role: 'assistant', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,abc' } }] },
+        { role: 'user', content: 'what next?' },
+    ], { useSysPrompt: false, prefillString: ' answer  ' });
+    assert.deepEqual(shaped, [
+        { role: 'assistant', content: [{ type: 'text', text: 'look' }] },
+        {
+            role: 'user',
+            content: [
+                { type: 'text', text: 'what next?' },
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } },
+            ],
+        },
+        { role: 'assistant', content: [{ type: 'text', text: ' answer' }] },
+    ]);
+});
+
+test('toClaudeShape mirrors the host tool fallback and named examples', () => {
+    assert.deepEqual(
+        toClaudeShape([
+            { role: 'system', name: 'example_assistant', content: 'hello' },
+            { role: 'assistant', tool_calls: [{ id: 'call-1', function: { name: 'roll', arguments: '{"sides":6}' } }] },
+            { role: 'tool', tool_call_id: 'call-1', content: '4' },
+        ], {
+            useSysPrompt: false,
+            useTools: false,
+            names: { charName: 'Aqua' },
+        }),
+        [
+            {
+                role: 'user',
+                content: [{ type: 'text', text: 'Aqua: hello' }],
+            },
+            {
+                role: 'assistant',
+                content: [{ type: 'text', text: '{"sides":6}' }],
+            },
+            {
+                role: 'user',
+                content: [{ type: 'text', text: '4' }],
+            },
+        ],
+    );
 });
 
 test('a volatile span is explained by the macro that causes it', () => {

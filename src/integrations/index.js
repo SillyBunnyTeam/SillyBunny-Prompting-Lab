@@ -11,10 +11,6 @@ export async function collectIntegrations(hostRef) {
     const caveats = [];
     const promptTags = readPromptTags(hostRef);
     const macroEnhanced = readMacroEnhanced(hostRef);
-    if (!macroEnhanced) {
-        // Not installed is normal, so this is only worth noting on the run.
-        caveats.push('macro-enhanced-missing');
-    }
     return {
         promptTags,
         macroEnhanced,
