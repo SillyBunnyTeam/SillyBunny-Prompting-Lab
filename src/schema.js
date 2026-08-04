@@ -3,6 +3,7 @@ import {
     CASE_VERSION,
     DRAFT_VERSION,
     MAX_REGEX_LENGTH,
+    PROMPT_DRAFT_VERSION,
     RUN_VERSION,
     STATUS,
     SUITE_VERSION,
@@ -360,6 +361,97 @@ export function validateDraft(draft) {
         problems.push('Choose which kind of preset this is.');
     }
     problems.push(...validatePresetPayload(normalized.apiId, normalized.payload));
+    return problems;
+}
+
+/* -------------------------------------------------------- prompt drafts */
+
+const PROMPT_ROLES = new Set(['system', 'user', 'assistant']);
+
+function normalizePromptVersion(value) {
+    const source = plainObject(value);
+    if (typeof source.content !== 'string') {
+        return null;
+    }
+    return {
+        id: text(source.id) || newId(),
+        label: text(source.label, 'Draft') || 'Draft',
+        content: source.content,
+        createdAt: text(source.createdAt),
+        updatedAt: text(source.updatedAt),
+    };
+}
+
+/**
+ * A titled prompt kept in the Prompts space. One prompt can hold several
+ * draft versions of its text; exactly one of them is the selected version,
+ * which is what gets sent to presets and offered to comparisons.
+ */
+export function createPromptDraft(patch = {}) {
+    const now = new Date().toISOString();
+    return normalizePromptDraft({
+        v: PROMPT_DRAFT_VERSION,
+        id: newId(),
+        title: 'New prompt',
+        versions: [{ id: newId(), label: 'Draft 1', content: '', createdAt: now, updatedAt: now }],
+        createdAt: now,
+        updatedAt: now,
+        ...patch,
+    });
+}
+
+export function normalizePromptDraft(value) {
+    const source = plainObject(value);
+    const versions = list(source.versions)
+        .map(version => normalizePromptVersion(version))
+        .filter(Boolean);
+    if (!versions.length) {
+        versions.push({ id: newId(), label: 'Draft 1', content: '', createdAt: '', updatedAt: '' });
+    }
+    const selected = text(source.selectedVersionId);
+    return {
+        v: PROMPT_DRAFT_VERSION,
+        id: text(source.id) || newId(),
+        title: text(source.title, 'Untitled prompt') || 'Untitled prompt',
+        notes: text(source.notes),
+        tags: list(source.tags).map(tag => text(tag)).filter(Boolean),
+        role: PROMPT_ROLES.has(source.role) ? source.role : 'system',
+        versions,
+        selectedVersionId: versions.some(version => version.id === selected)
+            ? selected
+            : versions[0].id,
+        createdAt: text(source.createdAt),
+        updatedAt: text(source.updatedAt),
+    };
+}
+
+export function migratePromptDraft(value) {
+    const source = plainObject(value);
+    if (integer(source.v, 0, 0) > PROMPT_DRAFT_VERSION) {
+        return null;
+    }
+    return normalizePromptDraft(source);
+}
+
+export function validatePromptDraft(draft) {
+    const normalized = normalizePromptDraft(draft);
+    const problems = [];
+    if (!normalized.title.trim()) {
+        problems.push('Give this prompt a title.');
+    }
+    const labels = new Set();
+    for (const version of normalized.versions) {
+        if (!version.label.trim()) {
+            problems.push('Every draft version needs a label.');
+            break;
+        }
+        const key = version.label.trim().toLowerCase();
+        if (labels.has(key)) {
+            problems.push(`Two draft versions share the label "${version.label.trim()}".`);
+            break;
+        }
+        labels.add(key);
+    }
     return problems;
 }
 

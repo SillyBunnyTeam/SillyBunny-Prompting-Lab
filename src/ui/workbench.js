@@ -2,7 +2,7 @@ import { EXTENSION_LABEL, TAB, TAB_LABEL } from '../constants.js';
 import { element, emptyState, replace } from '../dom.js';
 import { getSettings, updateSettings } from '../settings.js';
 
-const TAB_ORDER = [TAB.CASES, TAB.PRESETS, TAB.RUN, TAB.DIFF, TAB.AB, TAB.SETTINGS];
+const TAB_ORDER = [TAB.CASES, TAB.PRESETS, TAB.PROMPTS, TAB.RUN, TAB.DIFF, TAB.EXPERIMENT, TAB.AB, TAB.SETTINGS];
 
 /**
  * The workbench owns the tab shell and hands each tab a panel element to fill.

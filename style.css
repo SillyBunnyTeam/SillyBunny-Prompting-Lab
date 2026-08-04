@@ -58,6 +58,70 @@
     cursor: pointer;
 }
 
+/* ---- full-page workspace ---- */
+
+.sbpl-page {
+    position: fixed;
+    inset: 0;
+    z-index: 4000;
+    display: flex;
+    flex-direction: column;
+    background-color: var(--SmartThemeBlurTintColor, #1b1f20);
+    color: var(--SmartThemeBodyColor, inherit);
+}
+
+.sbpl-page[hidden] {
+    display: none;
+}
+
+.sbpl-page-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em 1em;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75em 1em;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4));
+}
+
+.sbpl-page-heading {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15em;
+    min-width: 0;
+}
+
+.sbpl-page-title {
+    margin: 0;
+    font-size: calc(var(--mainFontSize, 1rem) * 1.2);
+}
+
+.sbpl-page-subtitle {
+    margin: 0;
+    font-size: calc(var(--mainFontSize, 1rem) * 0.85);
+    opacity: 0.75;
+}
+
+.sbpl-page-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0.75em 1em 2em;
+}
+
+.sbpl-page-body > .sbpl-workbench-mount {
+    max-width: 70em;
+    margin: 0 auto;
+}
+
+/* Inside the page there is no drawer above the workbench to separate from. */
+.sbpl-page-body .sbpl-workbench {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+}
+
 /* ---- workbench shell ---- */
 
 .sbpl-workbench {
@@ -691,4 +755,29 @@
     margin-top: 0.4em;
     font-family: var(--monoFontFamily, monospace);
     font-size: calc(var(--mainFontSize, 1rem) * 0.85);
+}
+
+/* ---- prompts space and prompt comparison ---- */
+
+.sbpl-prompts-tab,
+.sbpl-experiment-tab {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7em;
+}
+
+.sbpl-send-to-preset,
+.sbpl-analysis {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    padding: 0.6em 0.8em;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
+    border-radius: 0.4em;
+}
+
+.sbpl-send-to-preset .sbpl-field-label,
+.sbpl-analysis .sbpl-field-label,
+.sbpl-modules-head .sbpl-field-label {
+    margin: 0;
 }

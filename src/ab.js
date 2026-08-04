@@ -4,10 +4,9 @@ import { ctxOf, getContext } from './host.js';
  * Sends a captured prompt to one or more connection profiles and returns the
  * replies side by side.
  *
- * This is the one part of Prompting Lab that spends tokens, so it only ever
- * runs when the user asks for it. The request goes out under a chosen profile
- * without switching the profile the user is on, and nothing is written to any
- * chat.
+ * Everything here spends tokens, so it only ever runs when the user asks for
+ * it. The request goes out under a chosen profile without switching the
+ * profile the user is on, and nothing is written to any chat.
  */
 
 /** Profile modes that can be used for a comparison. */
@@ -45,11 +44,12 @@ export function listComparableProfiles(hostRef = getContext) {
 }
 
 /**
- * Sends one captured prompt under one profile.
+ * Sends a prompt, either a message list or one long string, under one
+ * profile. Every send this extension makes goes through here.
  *
  * @returns {Promise<{profileId: string, text: string, error: string|null}>}
  */
-export async function sendUnderProfile(run, profileId, {
+export async function sendPrompt(profileId, prompt, {
     hostRef = getContext,
     maxTokens = 300,
     signal = null,
@@ -63,14 +63,8 @@ export async function sendUnderProfile(run, profileId, {
             error: 'Side-by-side replies need the Connection Manager extension, which is not available.',
         };
     }
-
-    const prompt = run?.capture?.messages ?? run?.capture?.combinedPrompt ?? '';
     if (!prompt || (Array.isArray(prompt) && !prompt.length)) {
-        return {
-            profileId,
-            text: '',
-            error: 'This run did not capture a prompt, so there is nothing to send.',
-        };
+        return { profileId, text: '', error: 'There is nothing to send.' };
     }
 
     try {
@@ -88,6 +82,23 @@ export async function sendUnderProfile(run, profileId, {
     } catch (error) {
         return { profileId, text: '', error: describeSendError(error) };
     }
+}
+
+/**
+ * Sends one captured prompt under one profile.
+ *
+ * @returns {Promise<{profileId: string, text: string, error: string|null}>}
+ */
+export async function sendUnderProfile(run, profileId, options = {}) {
+    const prompt = run?.capture?.messages ?? run?.capture?.combinedPrompt ?? '';
+    if (!prompt || (Array.isArray(prompt) && !prompt.length)) {
+        return {
+            profileId,
+            text: '',
+            error: 'This run did not capture a prompt, so there is nothing to send.',
+        };
+    }
+    return sendPrompt(profileId, prompt, options);
 }
 
 function describeSendError(error) {

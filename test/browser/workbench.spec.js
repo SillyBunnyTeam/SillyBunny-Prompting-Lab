@@ -26,18 +26,45 @@ test('opening the settings drawer shows the lab without a second open action', a
     await expect(page.locator('#sbpl-workbench')).toBeVisible();
 });
 
-test('the wand item opens the extensions surface and reveals the workbench', async ({ page }) => {
+test('the wand item opens the lab as a page of its own', async ({ page }) => {
     await page.locator('#sbpl-menu-item').click();
-    await expect(page.locator('#sbpl-workbench')).toBeVisible();
-    const routing = await page.evaluate(() => globalThis.fixtureGetRouting());
-    expect(routing.shellCalls).toContainEqual(['right', 'extensions']);
+    const workspace = page.locator('#sbpl-page');
+    await expect(workspace).toBeVisible();
+    await expect(workspace).toHaveAttribute('role', 'dialog');
+    await expect(workspace.locator('#sbpl-workbench')).toBeVisible();
+    await expect(workspace.locator('.sbpl-page-title')).toHaveText('Prompting Lab');
+});
+
+test('closing the page puts the workbench back in the drawer', async ({ page }) => {
+    await page.locator('#sbpl-menu-item').click();
+    await page.locator('.sbpl-page-close').click();
+    await expect(page.locator('#sbpl-page')).toBeHidden();
+    const drawerMount = page.locator('#sbpl-settings-content .sbpl-workbench-mount #sbpl-workbench');
+    await expect(drawerMount).toHaveCount(1);
+});
+
+test('Escape closes the page workspace', async ({ page }) => {
+    await page.locator('#sbpl-menu-item').click();
+    await expect(page.locator('#sbpl-page')).toBeVisible();
+    await page.locator('#sbpl-page').press('Escape');
+    await expect(page.locator('#sbpl-page')).toBeHidden();
+});
+
+test('the drawer offers the full page without going through the wand', async ({ page }) => {
+    await page.locator('#extensions-settings-button > .drawer-toggle').click();
+    await page.locator('#sbpl-settings > .inline-drawer-toggle').click();
+    await page.locator('#sbpl-open-page').click();
+    await expect(page.locator('#sbpl-page')).toBeVisible();
 });
 
 test('the workbench exposes every tab and marks one as selected', async ({ page }) => {
     await page.locator('#sbpl-menu-item').click();
     const tabs = page.locator('#sbpl-workbench .sbpl-tab');
-    await expect(tabs).toHaveCount(6);
-    await expect(tabs).toHaveText(['Tests', 'Presets', 'Run tests', 'Compare runs', 'Compare models', 'Settings']);
+    await expect(tabs).toHaveCount(8);
+    await expect(tabs).toHaveText([
+        'Tests', 'Presets', 'Prompts', 'Run tests',
+        'Compare runs', 'Compare prompts', 'Compare models', 'Settings',
+    ]);
     await expect(page.locator('.sbpl-tab[aria-selected="true"]')).toHaveCount(1);
 });
 
@@ -117,4 +144,5 @@ test('deactivate removes everything the extension added', async ({ page }) => {
     await expect(page.locator('#sbpl-settings')).toHaveCount(0);
     await expect(page.locator('#sbpl-menu-item')).toHaveCount(0);
     await expect(page.locator('#sbpl-workbench')).toHaveCount(0);
+    await expect(page.locator('#sbpl-page')).toHaveCount(0);
 });

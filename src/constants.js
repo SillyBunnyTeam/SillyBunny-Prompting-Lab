@@ -10,6 +10,7 @@ export const EXPORT_VERSION = 2;
 export const SETTINGS_VERSION = 1;
 export const CASE_VERSION = 2;
 export const DRAFT_VERSION = 1;
+export const PROMPT_DRAFT_VERSION = 1;
 export const SUITE_VERSION = 1;
 export const RUN_VERSION = 1;
 export const EMBED_VERSION = 1;
@@ -19,6 +20,7 @@ export const STORE_PREFIX = Object.freeze({
     CASE: 'case:',
     RUN: 'run:',
     DRAFT: 'draft:',
+    PROMPT: 'prompt:',
 });
 
 export const INDEX_KEY = Object.freeze({
@@ -26,6 +28,7 @@ export const INDEX_KEY = Object.freeze({
     CASES: 'index:cases',
     RUNS: 'index:runs:',
     DRAFTS: 'index:drafts',
+    PROMPTS: 'index:prompts',
 });
 
 /** Status of a single case within a run. */
@@ -119,8 +122,10 @@ export const CAVEAT_TEXT = Object.freeze({
 export const TAB = Object.freeze({
     CASES: 'cases',
     PRESETS: 'presets',
+    PROMPTS: 'prompts',
     RUN: 'run',
     DIFF: 'diff',
+    EXPERIMENT: 'experiment',
     AB: 'ab',
     SETTINGS: 'settings',
 });
@@ -128,8 +133,10 @@ export const TAB = Object.freeze({
 export const TAB_LABEL = Object.freeze({
     [TAB.CASES]: 'Tests',
     [TAB.PRESETS]: 'Presets',
+    [TAB.PROMPTS]: 'Prompts',
     [TAB.RUN]: 'Run tests',
     [TAB.DIFF]: 'Compare runs',
+    [TAB.EXPERIMENT]: 'Compare prompts',
     [TAB.AB]: 'Compare models',
     [TAB.SETTINGS]: 'Settings',
 });

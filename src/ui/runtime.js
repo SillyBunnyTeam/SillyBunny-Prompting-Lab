@@ -1,9 +1,11 @@
 import { EXTENSION_LABEL, EXTENSION_NAME, TAB } from '../constants.js';
-import { element } from '../dom.js';
+import { button, element } from '../dom.js';
 import { createAbTab } from './ab-tab.js';
 import { createCasesTab } from './cases-tab.js';
 import { createDiffTab } from './diff-tab.js';
+import { createExperimentTab } from './experiment-tab.js';
 import { createPresetsTab } from './presets-tab.js';
+import { createPromptsTab } from './prompts-tab.js';
 import { createRunTab } from './run-tab.js';
 import { createSettingsTab } from './settings-tab.js';
 import { createWorkbench } from './workbench.js';
@@ -13,23 +15,6 @@ let mounted = null;
 function settingsHost() {
     return document.getElementById('extensions_settings2')
         ?? document.getElementById('extensions_settings');
-}
-
-function openExtensionsSurface() {
-    if (typeof globalThis.SillyBunnyShell?.openTab === 'function') {
-        globalThis.SillyBunnyShell.openTab('right', 'extensions');
-        return;
-    }
-    const toggle = document.querySelector('#extensions-settings-button > .drawer-toggle');
-    const host = settingsHost();
-    const hostIsVisible = host instanceof HTMLElement && host.getClientRects().length > 0;
-    if (!hostIsVisible && toggle instanceof HTMLElement) {
-        toggle.dispatchEvent(new MouseEvent('click', {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-        }));
-    }
 }
 
 export function mountRuntimeUi({ signal = null } = {}) {
@@ -47,6 +32,9 @@ export function mountRuntimeUi({ signal = null } = {}) {
     let drawerObserver = null;
     let drawerStatus = null;
     let workbenchMount = null;
+    let page = null;
+    let pageMount = null;
+    let pageOpener = null;
     let disposed = false;
     let workbench = null;
 
@@ -94,15 +82,31 @@ export function mountRuntimeUi({ signal = null } = {}) {
             runTab.runOne(testCase);
         },
     });
+    const promptsTab = createPromptsTab({
+        onChanged: () => {
+            presetsTab.refresh();
+            experimentTab.refresh();
+        },
+    });
     const presetsTab = createPresetsTab({
-        onChanged: () => casesTab.refresh(),
+        onChanged: () => {
+            casesTab.refresh();
+            promptsTab.refresh();
+        },
+        onPromptSaved: () => {
+            promptsTab.refresh();
+            experimentTab.refresh();
+        },
     });
     const diffTab = createDiffTab();
+    const experimentTab = createExperimentTab();
     const abTab = createAbTab();
     workbench.registerTab(TAB.CASES, casesTab);
     workbench.registerTab(TAB.PRESETS, presetsTab);
+    workbench.registerTab(TAB.PROMPTS, promptsTab);
     workbench.registerTab(TAB.RUN, runTab);
     workbench.registerTab(TAB.DIFF, diffTab);
+    workbench.registerTab(TAB.EXPERIMENT, experimentTab);
     const settingsTab = createSettingsTab({
         onChanged: () => {
             casesTab.refresh();
@@ -119,29 +123,81 @@ export function mountRuntimeUi({ signal = null } = {}) {
         drawerContent?.setAttribute('aria-hidden', String(!expanded));
     }
 
-    function revealWorkbench() {
+    /* ---------------------------------------------------- full-page mode */
+
+    function ensurePage() {
+        if (page?.isConnected) {
+            return;
+        }
+        page?.remove();
+        document.getElementById('sbpl-page')?.remove();
+        page = element('div', {
+            id: 'sbpl-page',
+            className: 'sbpl-page',
+            attributes: {
+                role: 'dialog',
+                'aria-modal': 'true',
+                'aria-label': `${EXTENSION_LABEL} workspace`,
+            },
+        });
+        page.hidden = true;
+
+        const header = element('header', { className: 'sbpl-page-header' });
+        const heading = element('div', { className: 'sbpl-page-heading' });
+        heading.append(
+            element('h2', { className: 'sbpl-page-title', text: EXTENSION_LABEL }),
+            element('p', {
+                className: 'sbpl-page-subtitle',
+                text: 'Prompt tests build prompts without sending a message or using tokens. Compare prompts and Compare models are the tabs that send requests.',
+            }),
+        );
+        const close = button('Close workspace', () => closePage(), {
+            className: 'menu_button sbpl-button sbpl-page-close',
+            title: 'Close the workspace and return to SillyBunny (Escape)',
+        });
+        header.append(heading, close);
+
+        const body = element('div', { className: 'sbpl-page-body' });
+        pageMount = element('div', { className: 'sbpl-workbench-mount' });
+        body.append(pageMount);
+        page.append(header, body);
+        page.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                event.stopPropagation();
+                closePage();
+            }
+        });
+        document.body.append(page);
+    }
+
+    /** Opens the lab as a page of its own rather than a drawer entry. */
+    function openPage(opener = null) {
         if (disposed) {
             return;
         }
-        ensureSettingsDrawer();
-        openExtensionsSurface();
-        if (!settingsDrawer?.isConnected || !workbenchMount) {
-            return;
-        }
-        const root = workbench.mount(workbenchMount);
-        if (!root) {
-            return;
-        }
-        if (drawerIcon?.classList.contains('down')) {
-            drawerToggle?.click();
-        }
-        syncDrawerAccessibility();
+        ensurePage();
+        pageOpener = opener instanceof HTMLElement ? opener : null;
+        page.hidden = false;
+        workbench.mount(pageMount);
         requestAnimationFrame(() => {
-            if (!disposed && root.isConnected) {
-                root.scrollIntoView({ block: 'start', inline: 'nearest' });
+            if (!disposed && page && !page.hidden) {
                 workbench.focus();
             }
         });
+    }
+
+    /** Puts the workbench back in the drawer so nothing is lost on close. */
+    function closePage() {
+        if (!page || page.hidden) {
+            return;
+        }
+        page.hidden = true;
+        ensureSettingsDrawer();
+        if (workbenchMount) {
+            workbench.mount(workbenchMount);
+        }
+        pageOpener?.focus?.();
+        pageOpener = null;
     }
 
     function ensureMenuItem() {
@@ -160,7 +216,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
             className: 'list-group-item flex-container flexGap5 interactable sbpl-menu-item',
             attributes: {
                 type: 'button',
-                title: 'Open Prompting Lab to test prompts for your characters',
+                title: 'Open the Prompting Lab workspace to test prompts for your characters',
             },
         });
         menuItem.append(
@@ -170,7 +226,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
             }),
             element('span', { text: EXTENSION_LABEL }),
         );
-        menuItem.addEventListener('click', revealWorkbench);
+        menuItem.addEventListener('click', () => openPage(menuItem));
         host.append(menuItem);
     }
 
@@ -230,16 +286,22 @@ export function mountRuntimeUi({ signal = null } = {}) {
             attributes: { role: 'status', 'aria-live': 'polite' },
         });
 
+        const openPageButton = button('Open as full page', () => openPage(openPageButton), {
+            id: 'sbpl-open-page',
+            className: 'menu_button sbpl-button',
+            title: 'Open the lab as a workspace covering the whole page',
+        });
         settingsBody.append(
             drawerStatus,
             element('p', {
                 className: 'sbpl-settings-note',
-                text: 'Prompt tests build prompts without sending a message or using tokens. Compare models is the only tab that sends a prompt and uses tokens.',
+                text: 'Prompt tests build prompts without sending a message or using tokens. Compare prompts and Compare models are the only tabs that send a prompt and use tokens.',
             }),
             element('p', {
                 className: 'sbpl-settings-note',
                 text: 'While a suite runs, Prompting Lab temporarily applies each test case\'s character, persona, preset, and connection profile, then restores your setup.',
             }),
+            openPageButton,
         );
 
         workbenchMount = element('div', { className: 'sbpl-workbench-mount' });
@@ -247,7 +309,9 @@ export function mountRuntimeUi({ signal = null } = {}) {
         settingsDrawer.append(drawerToggle, drawerContent);
         settingsRoot.append(settingsDrawer);
         host.append(settingsRoot);
-        workbench.mount(workbenchMount);
+        if (!page || page.hidden) {
+            workbench.mount(workbenchMount);
+        }
 
         drawerObserver = new MutationObserver(syncDrawerAccessibility);
         drawerObserver.observe(drawerIcon, { attributes: true, attributeFilter: ['class'] });
@@ -288,7 +352,9 @@ export function mountRuntimeUi({ signal = null } = {}) {
             workbench.dispose();
             menuItem?.remove();
             settingsRoot?.remove();
+            page?.remove();
             document.getElementById('sbpl-menu-item')?.remove();
+            document.getElementById('sbpl-page')?.remove();
             const staleDrawer = document.getElementById('sbpl-settings');
             (staleDrawer?.closest('.extension_container') ?? staleDrawer)?.remove();
             menuItem = null;
@@ -300,6 +366,9 @@ export function mountRuntimeUi({ signal = null } = {}) {
             drawerObserver = null;
             drawerStatus = null;
             workbenchMount = null;
+            page = null;
+            pageMount = null;
+            pageOpener = null;
         },
     };
 

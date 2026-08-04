@@ -7,8 +7,8 @@ import * as storage from '../storage.js';
 
 /**
  * Sends one captured prompt to two connection profiles and shows the replies
- * next to each other. This is the only part of the extension that spends
- * tokens, so nothing happens until the button is pressed.
+ * next to each other. Along with Compare prompts, this spends tokens, so
+ * nothing happens until the button is pressed.
  */
 export function createAbTab() {
     let root = null;

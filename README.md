@@ -18,8 +18,8 @@ It can help when:
 - You want to know whether a macro is breaking prompt caching and costing you money.
 - You maintain cards or presets for other people and want to check them before release.
 
-Prompt tests do not send messages or use tokens. **Compare models** is the only tab that sends a
-prompt and uses tokens, and it does nothing until you choose **Get both replies**.
+Prompt tests do not send messages or use tokens. **Compare prompts** and **Compare models** are the
+only tabs that send a prompt and use tokens, and they do nothing until you press their buttons.
 
 ## Install
 
@@ -39,12 +39,13 @@ No server plugin or build step is needed.
 
 ## First test
 
-1. Open the wand menu and choose **Prompting Lab**.
-2. SillyBunny opens **Extensions**, expands the Prompting Lab drawer, and shows the lab.
-3. On **Tests**, create a suite, then add a test case and choose a character.
-4. Open **Run tests** and run the suite.
-5. Look at the sections and token counts that come back.
-6. Choose **Set passing runs as baselines** so future runs have something to compare against.
+1. Open the wand menu and choose **Prompting Lab**. The lab opens as a workspace covering the
+   whole page. Close it with **Close workspace** or Escape; the same lab also lives in the
+   Prompting Lab drawer under **Extensions**, with an **Open as full page** button to get back.
+2. On **Tests**, create a suite, then add a test case and choose a character.
+3. Open **Run tests** and run the suite.
+4. Look at the sections and token counts that come back.
+5. Choose **Set passing runs as baselines** so future runs have something to compare against.
 
 ## What a run tells you
 
@@ -59,7 +60,7 @@ Each run also lists what a test cannot reproduce. A test build skips extensions 
 history at the last moment, such as vector storage and summaries, so a real reply may contain
 content a test does not show. These notes appear on the run itself rather than in the manual.
 
-## The six tabs
+## The eight tabs
 
 ### Tests
 
@@ -97,12 +98,28 @@ turn one off, move it, change its role or text, add or duplicate one, and see wh
 tokens. The Text Completion kinds get the fields that matter to them. Every setting a preset holds,
 including the ones without their own control, can be edited as text.
 
+Single prompts can travel between presets. **Copy** on any module, including one browsed from an
+installed preset, holds it on a clipboard inside the lab; **Paste** adds it to the draft being
+edited. A pasted module always gets a fresh identity, so pasting can never overwrite what a preset
+already has. **To Prompts tab** saves a module into the Prompts space instead.
+
 When a draft is ready, **Publish to SillyBunny** saves it as a new preset. It never overwrites,
 renames, or deletes an installed preset, and it never changes the preset you have selected. Renaming
 and deleting installed presets stays in SillyBunny's own preset menu. SillyBunny reads its preset
 lists while starting, so the workshop offers a reload when you publish.
 
 A draft says so when the preset it was copied from has changed or been uninstalled since.
+
+### Prompts
+
+A space for prompts on their own, outside any preset. Each prompt has a title, a role, and as many
+draft versions of its text as you like; one version is marked as selected. Keep a careful version
+and an experimental version side by side, and switch which one is selected without losing either.
+
+The selected draft is what leaves this tab: **Send to a preset** adds it as a new module at the end
+of a Chat Completion draft in the workshop, and **Copy for pasting** puts it on the lab clipboard
+for the Presets tab. Prompt drafts are also what **Compare prompts** offers to load, so the drafts
+you keep here are the variants you can test.
 
 ### Run tests
 
@@ -123,11 +140,24 @@ default so a real change stands out; there is a switch to show them.
 If the two runs were made with different settings, such as a different model or a changed macro
 pack, that is listed above the differences.
 
+### Compare prompts
+
+Tests a prompt against a modified version of it. Both versions are sent through the same
+connection, with the same character card and the same test message, so the prompt text is the only
+difference between the two requests. The replies come back side by side. Prompts can be typed in
+directly or loaded from the drafts kept on the Prompts tab.
+
+After the replies arrive, an optional analysis can be requested: a model of your choosing is shown
+both prompts and both replies and asked what changed between the prompts and what the replies show.
+The analysis is a reading aid, not a verdict, and it is only fetched when you ask for it.
+
+Along with Compare models, this tab uses tokens. Nothing is added to any chat, and the connection
+you are using does not change.
+
 ### Compare models
 
-Sends a saved prompt to two connections and shows both replies next to each other. This is the only
-part of Prompting Lab that uses tokens. Nothing is added to any chat, and the connection you are
-using does not change.
+Sends a saved prompt to two connections and shows both replies next to each other. Nothing is added
+to any chat, and the connection you are using does not change.
 
 ### Settings
 

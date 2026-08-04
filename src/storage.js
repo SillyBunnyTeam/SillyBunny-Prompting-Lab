@@ -1,5 +1,16 @@
 import { DB_NAME, INDEX_KEY, STORE_PREFIX } from './constants.js';
-import { migrateCase, migrateDraft, migrateRun, migrateSuite, normalizeCase, normalizeDraft, normalizeRun, normalizeSuite } from './schema.js';
+import {
+    migrateCase,
+    migrateDraft,
+    migratePromptDraft,
+    migrateRun,
+    migrateSuite,
+    normalizeCase,
+    normalizeDraft,
+    normalizePromptDraft,
+    normalizeRun,
+    normalizeSuite,
+} from './schema.js';
 
 /**
  * Test cases, suites and run records live in IndexedDB rather than in
@@ -104,6 +115,31 @@ export async function listDrafts() {
 export async function deleteDraft(id) {
     await getStore().removeItem(`${STORE_PREFIX.DRAFT}${id}`);
     await removeFromIndex(INDEX_KEY.DRAFTS, id);
+}
+
+/* -------------------------------------------------------- prompt drafts */
+
+export async function savePromptDraft(draft) {
+    const normalized = normalizePromptDraft({ ...draft, updatedAt: new Date().toISOString() });
+    await getStore().setItem(`${STORE_PREFIX.PROMPT}${normalized.id}`, normalized);
+    await addToIndex(INDEX_KEY.PROMPTS, normalized.id);
+    return normalized;
+}
+
+export async function getPromptDraft(id) {
+    const value = await getStore().getItem(`${STORE_PREFIX.PROMPT}${id}`);
+    return value ? migratePromptDraft(value) : null;
+}
+
+export async function listPromptDrafts() {
+    const ids = await readIndex(INDEX_KEY.PROMPTS);
+    const drafts = await Promise.all(ids.map(id => getPromptDraft(id)));
+    return drafts.filter(Boolean);
+}
+
+export async function deletePromptDraft(id) {
+    await getStore().removeItem(`${STORE_PREFIX.PROMPT}${id}`);
+    await removeFromIndex(INDEX_KEY.PROMPTS, id);
 }
 
 /* ---------------------------------------------------------- test cases */

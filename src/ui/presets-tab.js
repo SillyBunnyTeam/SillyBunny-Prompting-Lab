@@ -1,5 +1,7 @@
+import { copyPrompt, onClipboardChange, readClipboard } from '../clipboard.js';
 import { button, element, emptyState, errorMessage, field, promptField, replace, statusRegion } from '../dom.js';
 import { countTokens, getContext, listInstalledPresets, publishPreset, readInstalledPreset } from '../host.js';
+import { moduleToDraft, pastePromptModule } from '../prompt-drafts.js';
 import {
     PRESET_API_IDS,
     PRESET_FIELDS,
@@ -30,7 +32,7 @@ const ROLES = ['system', 'user', 'assistant'];
  * you change lives in a Prompting Lab draft until you publish it, so an
  * experiment can never damage a preset you rely on.
  */
-export function createPresetsTab({ onChanged = null } = {}) {
+export function createPresetsTab({ onChanged = null, onPromptSaved = null } = {}) {
     let root = null;
     let searchInput = null;
     let typeSelect = null;
@@ -38,15 +40,25 @@ export function createPresetsTab({ onChanged = null } = {}) {
     let editorHost = null;
     let status = null;
     let reloadHost = null;
+    let unsubscribeClipboard = null;
 
     let drafts = [];
     let editing = null;
     let expanded = '';
+    let browsing = '';
 
     async function reload() {
         drafts = await storage.listDrafts();
         renderAll();
         onChanged?.();
+    }
+
+    /** Saves one module into the Prompts space as its own titled prompt. */
+    async function saveModuleAsPrompt(prompt, sourceName) {
+        const draft = moduleToDraft(prompt, { sourceName });
+        await storage.savePromptDraft(draft);
+        status.textContent = `Saved "${draft.title}" to the Prompts tab.`;
+        onPromptSaved?.();
     }
 
     function matches(name, apiId) {
@@ -87,7 +99,9 @@ export function createPresetsTab({ onChanged = null } = {}) {
                     continue;
                 }
                 shown += 1;
+                const key = `${apiId}:${name}`;
                 const item = element('li', { className: 'sbpl-preset-item' });
+                const row = element('div', { className: 'sbpl-module-row' });
                 const label = element('div', { className: 'sbpl-preset-label' });
                 label.append(
                     element('span', { className: 'sbpl-preset-name', text: name }),
@@ -99,7 +113,20 @@ export function createPresetsTab({ onChanged = null } = {}) {
                         status.textContent = errorMessage(error);
                     });
                 }, { className: 'menu_button sbpl-button' }));
-                item.append(label, actions);
+                if (isCcApiId(apiId)) {
+                    actions.append(button(browsing === key ? 'Hide prompts' : 'Browse prompts', () => {
+                        browsing = browsing === key ? '' : key;
+                        renderLibrary();
+                    }, {
+                        className: 'menu_button sbpl-button',
+                        title: `Copy single prompts out of "${name}" without copying the whole preset`,
+                    }));
+                }
+                row.append(label, actions);
+                item.append(row);
+                if (browsing === key) {
+                    item.append(renderInstalledModules(apiId, name));
+                }
                 list.append(item);
             }
         }
@@ -109,6 +136,62 @@ export function createPresetsTab({ onChanged = null } = {}) {
         }
         wrapper.append(list);
         return wrapper;
+    }
+
+    /**
+     * The prompt modules of one installed preset, read only, each with a copy
+     * action. This is how a single prompt travels out of a preset you have
+     * not copied into a draft.
+     */
+    function renderInstalledModules(apiId, name) {
+        const panel = element('div', { className: 'sbpl-module-editor' });
+        const payload = readInstalledPreset(apiId, name);
+        if (!payload) {
+            panel.append(element('p', {
+                className: 'sbpl-field-hint',
+                text: `"${name}" could not be read from SillyBunny.`,
+            }));
+            return panel;
+        }
+        const modules = listPromptModules(payload);
+        if (!modules.length) {
+            panel.append(element('p', { className: 'sbpl-field-hint', text: 'This preset has no prompt modules.' }));
+            return panel;
+        }
+        const list = element('ul', { className: 'sbpl-module-list' });
+        for (const module of modules) {
+            const { prompt } = module;
+            const item = element('li', { className: 'sbpl-module-item' });
+            const row = element('div', { className: 'sbpl-module-row' });
+            const label = element('div', { className: 'sbpl-module-label' });
+            label.append(
+                element('span', { className: 'sbpl-module-name', text: prompt.name || prompt.identifier }),
+                element('span', {
+                    className: 'sbpl-module-meta',
+                    text: prompt.marker ? 'filled in by SillyBunny' : (module.enabled ? '' : 'turned off'),
+                }),
+            );
+            const actions = element('div', { className: 'sbpl-module-actions' });
+            actions.append(button('Copy', () => {
+                copyPrompt(prompt, `"${name}"`);
+                status.textContent = `Copied "${prompt.name || prompt.identifier}" from "${name}". Paste it into the preset draft you are editing.`;
+            }, { className: 'menu_button sbpl-button sbpl-button-quiet' }));
+            if (!prompt.marker) {
+                actions.append(button('To Prompts tab', () => {
+                    void saveModuleAsPrompt(prompt, name).catch((error) => {
+                        status.textContent = errorMessage(error);
+                    });
+                }, {
+                    className: 'menu_button sbpl-button sbpl-button-quiet',
+                    title: 'Keep this prompt in the Prompts space, with its own drafts',
+                }));
+            }
+            row.append(label, actions);
+            item.append(row);
+            list.append(item);
+        }
+        panel.append(list);
+        return panel;
     }
 
     function describeDraft(draft) {
@@ -310,6 +393,24 @@ export function createPresetsTab({ onChanged = null } = {}) {
     function renderPromptModules() {
         const wrapper = element('div', { className: 'sbpl-modules' });
         const head = element('div', { className: 'sbpl-modules-head' });
+        const held = readClipboard();
+        const paste = button('Paste', () => {
+            const clip = readClipboard();
+            const result = pastePromptModule(editing.payload, clip?.prompt);
+            if (result.problem) {
+                status.textContent = result.problem;
+                return;
+            }
+            editing.payload = result.payload;
+            status.textContent = `Pasted "${clip.prompt.name || clip.prompt.identifier}" from ${clip.sourceName}.`;
+            renderEditor();
+        }, {
+            className: 'menu_button sbpl-button',
+            title: held
+                ? `Paste "${held.prompt.name || held.prompt.identifier}", copied from ${held.sourceName}`
+                : 'Copy a prompt from another preset first',
+        });
+        paste.disabled = !held;
         head.append(
             element('p', { className: 'sbpl-field-label', text: 'Prompt modules' }),
             button('Add module', () => {
@@ -323,10 +424,11 @@ export function createPresetsTab({ onChanged = null } = {}) {
                 expanded = identifier;
                 renderEditor();
             }, { className: 'menu_button sbpl-button' }),
+            paste,
         );
         wrapper.append(head, element('p', {
             className: 'sbpl-field-hint',
-            text: 'The prompt is built from top to bottom. Turning a module off leaves it in the preset but keeps it out of the prompt.',
+            text: 'The prompt is built from top to bottom. Turning a module off leaves it in the preset but keeps it out of the prompt. Copy takes one module to paste into another preset draft.',
         }));
 
         const modules = listPromptModules(editing.payload);
@@ -378,6 +480,13 @@ export function createPresetsTab({ onChanged = null } = {}) {
                 expanded = expanded === prompt.identifier ? '' : prompt.identifier;
                 renderEditor();
             }, { className: 'menu_button sbpl-button sbpl-button-quiet' }),
+            button('Copy', () => {
+                copyPrompt(prompt, `"${editing.name}"`);
+                status.textContent = `Copied "${prompt.name || prompt.identifier}". Paste it into any preset draft, or into this one.`;
+            }, {
+                className: 'menu_button sbpl-button sbpl-button-quiet',
+                title: `Copy ${prompt.name || prompt.identifier} for pasting into another preset draft`,
+            }),
         );
         if (!isReservedPrompt(prompt)) {
             actions.append(
@@ -389,6 +498,14 @@ export function createPresetsTab({ onChanged = null } = {}) {
                     });
                     renderEditor();
                 }, { className: 'menu_button sbpl-button sbpl-button-quiet' }),
+                button('To Prompts tab', () => {
+                    void saveModuleAsPrompt(prompt, editing.name).catch((error) => {
+                        status.textContent = errorMessage(error);
+                    });
+                }, {
+                    className: 'menu_button sbpl-button sbpl-button-quiet',
+                    title: 'Keep this prompt in the Prompts space, with its own drafts',
+                }),
                 button('Delete', () => {
                     editing.payload = removePromptModule(editing.payload, prompt.identifier);
                     if (expanded === prompt.identifier) {
@@ -640,6 +757,11 @@ export function createPresetsTab({ onChanged = null } = {}) {
         libraryHost = element('div', { className: 'sbpl-preset-library' });
         editorHost = element('div', { className: 'sbpl-editor-host' });
         root.append(controls, field('Import a preset file', fileInput), status, reloadHost, libraryHost, editorHost);
+        unsubscribeClipboard = onClipboardChange(() => {
+            if (editing) {
+                renderEditor();
+            }
+        });
         return root;
     }
 
@@ -657,6 +779,8 @@ export function createPresetsTab({ onChanged = null } = {}) {
             void reload().catch(() => {});
         },
         dispose() {
+            unsubscribeClipboard?.();
+            unsubscribeClipboard = null;
             root?.remove();
             root = null;
         },
