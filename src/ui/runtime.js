@@ -1,5 +1,7 @@
-import { EXTENSION_LABEL, EXTENSION_NAME } from '../constants.js';
+import { EXTENSION_LABEL, EXTENSION_NAME, TAB } from '../constants.js';
 import { element } from '../dom.js';
+import { createCasesTab } from './cases-tab.js';
+import { createRunTab } from './run-tab.js';
 import { createWorkbench } from './workbench.js';
 
 let mounted = null;
@@ -70,6 +72,15 @@ export function mountRuntimeUi({ signal = null } = {}) {
         lifetimeSignal: signal,
         onStateChange: updateDrawer,
     });
+
+    const runTab = createRunTab({
+        onRunFinished: () => workbench.refresh('run-finished'),
+    });
+    const casesTab = createCasesTab({
+        onChanged: () => runTab.refresh(),
+    });
+    workbench.registerTab(TAB.CASES, casesTab);
+    workbench.registerTab(TAB.RUN, runTab);
 
     function syncDrawerAccessibility() {
         const expanded = Boolean(drawerIcon && !drawerIcon.classList.contains('down'));

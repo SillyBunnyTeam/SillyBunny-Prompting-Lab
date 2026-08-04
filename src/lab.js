@@ -1,0 +1,183 @@
+import { evaluateAssertions } from './assertions.js';
+import { compareRuns, findVolatileSpans } from './compare.js';
+import { STATUS } from './constants.js';
+import { getContext } from './host.js';
+import { collectIntegrations } from './integrations/index.js';
+import { runSuite as runnerRunSuite, preflight } from './runner.js';
+import { resolveStatus } from './schema.js';
+import { getSettings } from './settings.js';
+import * as storage from './storage.js';
+
+/**
+ * Ties the runner, the checks, the comparison and storage together.
+ * The tabs call into here rather than orchestrating for themselves.
+ */
+
+/**
+ * Builds the analyze step handed to the runner: evaluate the case's checks,
+ * work out what changes between two builds of the same prompt, and compare the
+ * result against the baseline.
+ */
+function makeAnalyzer({ baselines, normalize }) {
+    return async ({ run, testCase, first, second }) => {
+        const volatileSpans = findVolatileSpans(
+            { capture: first },
+            second ? { capture: second } : null,
+        );
+        run.cache = {
+            ...run.cache,
+            volatileSpans,
+        };
+
+        run.assertionResults = evaluateAssertions(testCase?.assertions, run);
+
+        const baseline = baselines?.get(testCase?.id) ?? null;
+        if (baseline) {
+            const comparison = compareRuns(run, baseline, { volatileSpans, normalize });
+            run.diffVsBaseline = {
+                baselineRunId: baseline.id,
+                changedSections: comparison.changedSections,
+                addedSections: comparison.addedSections,
+                removedSections: comparison.removedSections,
+                tokenDeltas: comparison.tokenDeltas,
+                totalDelta: comparison.totalDelta,
+                summary: comparison.summary,
+            };
+            run.status = resolveStatus({
+                assertionResults: run.assertionResults,
+                hasBaseline: true,
+                diffIsEmpty: comparison.identical,
+            });
+        } else {
+            run.status = resolveStatus({
+                assertionResults: run.assertionResults,
+                hasBaseline: false,
+                diffIsEmpty: true,
+            });
+        }
+        return run;
+    };
+}
+
+/** Loads the baseline run for each case in a suite. */
+async function loadBaselines(suite) {
+    const baselines = new Map();
+    for (const [caseId, runId] of Object.entries(suite?.baselines ?? {})) {
+        const run = await storage.getRun(runId);
+        if (run) {
+            baselines.set(caseId, run);
+        }
+    }
+    return baselines;
+}
+
+export async function getSuiteCases(suite) {
+    const cases = [];
+    for (const caseId of suite?.caseIds ?? []) {
+        const testCase = await storage.getCase(caseId);
+        if (testCase) {
+            cases.push(testCase);
+        }
+    }
+    return cases;
+}
+
+/** Checks a suite before anything is changed. */
+export async function preflightSuite(suite) {
+    const cases = await getSuiteCases(suite);
+    return { ...await preflight(cases), cases };
+}
+
+/**
+ * Runs a suite end to end and stores the results.
+ * @returns {Promise<object>} the runner result, with runs already saved.
+ */
+export async function runSuite(suite, {
+    signal = null,
+    onProgress = null,
+    onStateChange = null,
+    host = null,
+    cases = null,
+} = {}) {
+    const settings = getSettings();
+    const toRun = cases ?? await getSuiteCases(suite);
+    const baselines = await loadBaselines(suite);
+
+    const result = await runnerRunSuite(toRun, {
+        host,
+        suiteId: suite?.id ?? '',
+        signal,
+        onProgress,
+        onStateChange,
+        collectIntegrations,
+        analyze: makeAnalyzer({ baselines, normalize: settings.normalizeVolatile }),
+        persistRun: async (run) => {
+            if (run.status === STATUS.SKIPPED) {
+                return;
+            }
+            await storage.saveRun(run);
+            await storage.pruneRuns(
+                run.caseId,
+                settings.runRetention,
+                Object.values(suite?.baselines ?? {}),
+            );
+        },
+    });
+
+    return result;
+}
+
+/** Marks a run as the baseline for its case. */
+export async function promoteBaseline(suite, caseId, runId) {
+    const next = {
+        ...suite,
+        baselines: { ...suite.baselines, [caseId]: runId },
+        updatedAt: new Date().toISOString(),
+    };
+    return storage.saveSuite(next);
+}
+
+/** Marks every passing run from a suite run as the baseline for its case. */
+export async function promoteAllPassing(suite, runs) {
+    const baselines = { ...suite.baselines };
+    for (const run of runs) {
+        if (run?.status === STATUS.PASS || run?.status === STATUS.CHANGED) {
+            baselines[run.caseId] = run.id;
+        }
+    }
+    return storage.saveSuite({ ...suite, baselines, updatedAt: new Date().toISOString() });
+}
+
+export async function clearBaseline(suite, caseId) {
+    const baselines = { ...suite.baselines };
+    delete baselines[caseId];
+    return storage.saveSuite({ ...suite, baselines, updatedAt: new Date().toISOString() });
+}
+
+/** Everything the case editor needs to offer real choices. */
+export function readAvailableOptions(context = getContext()) {
+    const characters = (context?.characters ?? [])
+        .filter(character => character?.avatar)
+        .map(character => ({ avatar: character.avatar, name: character.name ?? character.avatar }));
+
+    const personas = Object.entries(context?.powerUserSettings?.personas ?? {})
+        .map(([key, name]) => ({ key, name: String(name || key) }));
+
+    const profiles = (context?.extensionSettings?.connectionManager?.profiles ?? [])
+        .filter(profile => profile?.id)
+        .map(profile => ({ id: profile.id, name: profile.name ?? profile.id, mode: profile.mode ?? '' }));
+
+    let presets = [];
+    try {
+        presets = context?.getPresetManager?.()?.getAllPresets?.() ?? [];
+    } catch {
+        presets = [];
+    }
+
+    const promptTagsProfiles = Object.entries(context?.extensionSettings?.promptTags?.profiles ?? {})
+        .map(([name, profile]) => ({ name, id: profile?.id ?? '' }));
+
+    return { characters, personas, profiles, presets, promptTagsProfiles };
+}
+
+export { storage };
