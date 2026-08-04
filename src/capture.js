@@ -1,5 +1,5 @@
 import { CAVEAT, SECTION_LABEL } from './constants.js';
-import { countTokens, displayTokenCounts, getContext } from './host.js';
+import { countTokens, ctxOf, displayTokenCounts, getContext } from './host.js';
 
 /**
  * Captures the prompt SillyBunny would send, without sending it.
@@ -172,7 +172,8 @@ export async function readTextCompletionSections(beforeCombine) {
  * Listens for one prompt assembly. Listeners are attached only for the length
  * of a capture, so a user's own generations are never observed.
  */
-export function createCaptureSession(context = getContext()) {
+export function createCaptureSession(hostRef = getContext) {
+    const context = ctxOf(hostRef);
     const source = context?.eventSource;
     const events = context?.eventTypes;
     const attached = [];
@@ -279,7 +280,8 @@ export function createCaptureSession(context = getContext()) {
  * chat, so nothing is written to disk; the message is removed by identity in a
  * finally block so an error cannot leave it behind.
  */
-export async function withTransientUserMessage(context, messageText, run) {
+export async function withTransientUserMessage(hostRef, messageText, run) {
+    const context = ctxOf(hostRef);
     const text = String(messageText ?? '');
     if (!text || !Array.isArray(context?.chat)) {
         return run();
@@ -307,28 +309,36 @@ export async function withTransientUserMessage(context, messageText, run) {
  * Runs one dry-run assembly and returns everything observed.
  * @returns {Promise<object>} capture result with sections, tokens and caveats.
  */
-export async function captureOnce({ userMessage = '', context = getContext(), host = null } = {}) {
-    if (typeof context?.generate !== 'function') {
+export async function captureOnce({ userMessage = '', context = getContext, host = null } = {}) {
+    const hostRef = context;
+    if (typeof ctxOf(hostRef)?.generate !== 'function') {
         throw new Error('Prompting Lab cannot build a prompt because SillyBunny\'s generate function is unavailable. Reload SillyBunny and try again.');
     }
 
-    const session = createCaptureSession(context);
+    const session = createCaptureSession(hostRef);
     session.attach();
     try {
-        await withTransientUserMessage(context, userMessage, () => context.generate('normal', {}, true));
+        await withTransientUserMessage(
+            hostRef,
+            userMessage,
+            () => ctxOf(hostRef).generate('normal', {}, true),
+        );
     } finally {
         session.detach();
     }
 
     const state = session.getState();
     const caveats = [CAVEAT.NO_INTERCEPTORS];
-    const apiType = context.mainApi === 'openai' ? 'cc' : 'tc';
+    // Read after assembly: a connection profile may have changed the API, and
+    // the context copies mainApi by value.
+    const live = ctxOf(hostRef);
+    const apiType = live.mainApi === 'openai' ? 'cc' : 'tc';
 
     let sections = [];
     let tokenTable = { total: 0, perSection: {} };
 
     if (apiType === 'cc') {
-        const read = readChatCompletionSections(host, context.promptManager);
+        const read = readChatCompletionSections(host, live.promptManager);
         sections = read.sections;
         tokenTable = read.tokenTable;
     } else {

@@ -11,6 +11,23 @@ export function getContext() {
     return globalThis.SillyTavern?.getContext?.() ?? null;
 }
 
+/**
+ * Resolves a host reference to a usable context.
+ *
+ * SillyBunny builds a fresh context object on every getContext() call and
+ * copies characterId, userAvatar, chatId and mainApi into it *by value*. A
+ * context held across a character switch therefore reports the old character
+ * for ever. Anything that reads those fields after changing state must pass the
+ * getContext function itself rather than one of its results, so callers accept
+ * either and resolve through here.
+ */
+export function ctxOf(source) {
+    if (typeof source === 'function') {
+        return source() ?? {};
+    }
+    return source ?? {};
+}
+
 function missing(module, exports) {
     return exports.filter(name => module?.[name] === undefined);
 }
