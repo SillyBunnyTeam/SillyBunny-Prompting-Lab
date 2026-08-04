@@ -102,7 +102,12 @@ export function createRunTab({ onRunFinished = null } = {}) {
                 renderResults(storedResult);
             }
         }
-        suiteSelect.disabled = suites.length === 0 || running;
+        if (!lastResult && !running) {
+            replace(resultsHost, suites.length ? null : emptyState(
+                'No test suites yet.',
+                'Create a suite and add a test case on the Tests tab, then come back here.',
+            ));
+        }
         updateControls();
         await showPreflight();
     }
@@ -112,6 +117,9 @@ export function createRunTab({ onRunFinished = null } = {}) {
         runButton.disabled = running || !hasCases;
         cancelButton.hidden = !running;
         baselineButton.hidden = !lastResult || running;
+        // Changing the suite mid-run would make the results, and any baselines
+        // saved from them, land under the wrong suite.
+        suiteSelect.disabled = running || !suites.length;
     }
 
     function summarizeRuns(runs) {
@@ -408,22 +416,22 @@ export function createRunTab({ onRunFinished = null } = {}) {
             if (!suites.length || !suiteSelect.options.length) {
                 void refreshSuites();
             }
-            if (!suites.length && !activeSuite) {
-                const empty = emptyState(
-                    'No test suites yet.',
-                    'Create a suite and add a test case on the Tests tab, then come back here.',
-                );
-                replace(resultsHost, empty);
-            }
             return root;
         },
         refresh() {
             if (!running) {
+                // The chat-file checks describe a moment in time; a refresh
+                // (a chat change, an edit) may have made them stale.
+                chatFileChecks.clear();
                 void refreshSuites();
             }
         },
         /** Runs a single test case, so a small change can be checked on its own. */
         runOne(testCase) {
+            if (running) {
+                statusLine.textContent = 'A run is already in progress. Stop it or let it finish first.';
+                return;
+            }
             void (async () => {
                 await refreshSuites();
                 const suite = suites.find(item => item.caseIds.includes(testCase.id));

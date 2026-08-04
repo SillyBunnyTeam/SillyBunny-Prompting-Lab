@@ -111,6 +111,38 @@ export function promptField(labelText, {
     return { wrapper, textarea };
 }
 
+/**
+ * A destructive button that asks to be pressed twice. The first press arms it
+ * and renames it; the second press within a few seconds runs the action. No
+ * dialog, so it works the same with a keyboard, a screen reader, and touch.
+ */
+export function confirmButton(label, onConfirm, {
+    className = 'menu_button sbpl-button',
+    title = '',
+    confirmLabel = 'Press again to confirm',
+} = {}) {
+    let armed = false;
+    let timer = null;
+    const node = button(label, () => {
+        if (armed) {
+            armed = false;
+            clearTimeout(timer);
+            node.textContent = label;
+            onConfirm();
+            return;
+        }
+        armed = true;
+        node.textContent = confirmLabel;
+        timer = setTimeout(() => {
+            armed = false;
+            if (node.isConnected) {
+                node.textContent = label;
+            }
+        }, 5000);
+    }, { className, title });
+    return node;
+}
+
 export function statusRegion(text = '') {
     return element('p', {
         className: 'sbpl-status',

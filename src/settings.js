@@ -59,11 +59,24 @@ export function getSettings() {
     return settings;
 }
 
+let lastOwnWriteAt = 0;
+
+/**
+ * True shortly after this extension saved its own settings. The debounced
+ * save makes the host emit SETTINGS_UPDATED back at us; refreshing on our own
+ * echo would rebuild the interface for no reason, about a second after every
+ * tab switch or preference change.
+ */
+export function isOwnSettingsEcho(withinMs = 2500) {
+    return Date.now() - lastOwnWriteAt < withinMs;
+}
+
 export function updateSettings(patch) {
     const context = getContext();
     const next = normalizeSettings({ ...getSettings(), ...patch });
     if (context?.extensionSettings) {
         context.extensionSettings[SETTINGS_KEY] = next;
+        lastOwnWriteAt = Date.now();
         context.saveSettingsDebounced?.();
     }
     return next;
@@ -84,6 +97,7 @@ export function clearSettings() {
     const context = getContext();
     if (context?.extensionSettings) {
         delete context.extensionSettings[SETTINGS_KEY];
+        lastOwnWriteAt = Date.now();
         context.saveSettingsDebounced?.();
     }
 }

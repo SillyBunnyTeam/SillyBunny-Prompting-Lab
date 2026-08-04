@@ -59,6 +59,21 @@ test('a suite and a test case can be created and saved', async ({ page }) => {
     await expect(panel.locator('.sbpl-case-item')).toHaveCount(1);
 });
 
+test('deleting a test case takes two presses, not one slip', async ({ page }) => {
+    const panel = await openTab(page, 'cases');
+    await panel.getByRole('button', { name: 'Create suite' }).click();
+    await panel.getByRole('button', { name: 'Add test case' }).click();
+    await panel.locator('.sbpl-editor select').first().selectOption('tester.png');
+    await panel.locator('button', { hasText: 'Save test case' }).click();
+    await expect(panel.locator('.sbpl-case-item')).toHaveCount(1);
+
+    const remove = panel.locator('.sbpl-case-item').getByRole('button', { name: 'Delete' });
+    await remove.click();
+    await expect(panel.locator('.sbpl-case-item')).toHaveCount(1, { timeout: 1000 });
+    await panel.locator('.sbpl-case-item').getByRole('button', { name: 'Press again to delete' }).click();
+    await expect(panel.locator('.sbpl-case-item')).toHaveCount(0);
+});
+
 test('a test case without a character explains what is missing', async ({ page }) => {
     const panel = await openTab(page, 'cases');
     await panel.getByRole('button', { name: 'Create suite' }).click();

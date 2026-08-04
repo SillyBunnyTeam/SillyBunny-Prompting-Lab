@@ -138,6 +138,16 @@ export async function runSuite(suite, {
     const toRun = cases ?? await getSuiteCases(suite);
     const baselines = await loadBaselines(suite);
 
+    // A case can belong to several suites, so pruning must protect every
+    // suite's baselines, not only this one's. Otherwise repeatedly running
+    // one suite would quietly delete the runs another suite compares against.
+    const pinnedRuns = new Set(Object.values(suite?.baselines ?? {}));
+    for (const other of await storage.listSuites()) {
+        for (const runId of Object.values(other?.baselines ?? {})) {
+            pinnedRuns.add(runId);
+        }
+    }
+
     const persist = async (run) => {
         if (run.status === STATUS.SKIPPED) {
             return;
@@ -146,7 +156,7 @@ export async function runSuite(suite, {
         await storage.pruneRuns(
             run.caseId,
             settings.runRetention,
-            Object.values(suite?.baselines ?? {}),
+            [...pinnedRuns],
         );
     };
 

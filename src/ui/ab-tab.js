@@ -59,18 +59,24 @@ export function createAbTab() {
     }
 
     async function reloadRuns() {
+        const previous = runSelect.value;
         runIndex = activeCase ? await storage.listRuns(activeCase.id) : [];
         replace(runSelect, ...runIndex.map(entry => element('option', {
             text: describeWhen(entry.startedAt),
             attributes: { value: entry.id },
         })));
-        if (runIndex.length) {
+        if (runIndex.some(entry => entry.id === previous)) {
+            runSelect.value = previous;
+        } else if (runIndex.length) {
             runSelect.value = runIndex[0].id;
         }
         updateControls();
     }
 
+    /** Refreshes the choices without discarding the ones already made. */
     function loadProfiles() {
+        const previousLeft = leftSelect.value;
+        const previousRight = rightSelect.value;
         profiles = listComparableProfiles(getContext());
         for (const select of [leftSelect, rightSelect]) {
             replace(select, ...profiles.map((profile) => {
@@ -85,12 +91,9 @@ export function createAbTab() {
             }));
         }
         const usable = profiles.filter(profile => profile.usable);
-        if (usable[0]) {
-            leftSelect.value = usable[0].id;
-        }
-        if (usable[1]) {
-            rightSelect.value = usable[1].id;
-        }
+        const keep = value => profiles.some(profile => profile.id === value && profile.usable);
+        leftSelect.value = keep(previousLeft) ? previousLeft : (usable[0]?.id ?? '');
+        rightSelect.value = keep(previousRight) ? previousRight : (usable[1]?.id ?? '');
         updateControls();
     }
 
@@ -109,33 +112,36 @@ export function createAbTab() {
     }
 
     async function send() {
-        if (!runSelect.value) {
+        // The controller doubles as the in-flight guard. It has to be set
+        // before the first await, or a double-click sends the prompt twice.
+        if (controller || !runSelect.value) {
             return;
         }
-        const run = await storage.getRun(runSelect.value);
-        if (!run) {
-            status.textContent = 'That run could not be loaded.';
-            return;
-        }
-        const ids = [leftSelect.value, rightSelect.value].filter(Boolean);
-        if (!ids.length) {
-            status.textContent = 'Choose at least one connection profile.';
-            return;
-        }
-
         controller = new AbortController();
+        const { signal } = controller;
         updateControls();
-        replace(output);
-        status.textContent = 'Waiting for replies. This sends the prompt and uses tokens.';
 
         try {
+            const run = await storage.getRun(runSelect.value);
+            if (!run) {
+                status.textContent = 'That run could not be loaded.';
+                return;
+            }
+            const ids = [leftSelect.value, rightSelect.value].filter(Boolean);
+            if (!ids.length) {
+                status.textContent = 'Choose at least one connection profile.';
+                return;
+            }
+
+            replace(output);
+            status.textContent = 'Waiting for replies. This sends the prompt and uses tokens.';
             const maxTokens = getSettings().abMaxTokens;
             const replies = await compareProfiles(run, ids, {
                 maxTokens,
-                signal: controller.signal,
+                signal,
             });
             renderReplies(run, replies);
-            status.textContent = 'Finished.';
+            status.textContent = signal.aborted ? 'Stopped.' : 'Finished.';
         } catch (error) {
             status.textContent = `The replies could not be fetched: ${errorMessage(error)}`;
         } finally {

@@ -1,5 +1,5 @@
 import { getContext, loadHost } from './src/host.js';
-import { clearSettings, getSettings } from './src/settings.js';
+import { clearSettings, getSettings, isOwnSettingsEcho } from './src/settings.js';
 import { clearAll } from './src/storage.js';
 import { mountRuntimeUi, unmountRuntimeUi } from './src/ui/runtime.js';
 
@@ -68,7 +68,14 @@ export function init() {
     };
     subscribe(source, events.CHAT_CHANGED, refresh('chat-changed'));
     subscribe(source, events.CHARACTER_EDITED, refresh('character-edited'));
-    subscribe(source, events.SETTINGS_UPDATED, refresh('settings-updated'));
+    const onSettingsUpdated = refresh('settings-updated');
+    subscribe(source, events.SETTINGS_UPDATED, () => {
+        // Our own saves echo back as SETTINGS_UPDATED; refreshing on the echo
+        // would rebuild the interface a second after every preference change.
+        if (!isOwnSettingsEcho()) {
+            onSettingsUpdated();
+        }
+    });
 }
 
 export function deactivate() {

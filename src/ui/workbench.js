@@ -54,6 +54,9 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
         if (selectMobile && selectMobile.value !== state.activeTab) {
             selectMobile.value = state.activeTab;
         }
+        // The panel is named after the selected tab, so a screen reader
+        // announces which section it has landed in.
+        panelHost?.setAttribute('aria-labelledby', `sbpl-tab-${state.activeTab}`);
     }
 
     function setActiveTab(id, { focus = false } = {}) {

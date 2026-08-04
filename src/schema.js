@@ -544,6 +544,9 @@ export function normalizeRun(value) {
                 return {
                     apiId: text(ref.apiId),
                     name: text(ref.name),
+                    // Whether the test case pinned this preset or it happened
+                    // to be active; the runner records it, so keep it.
+                    pinned: bool(ref.pinned),
                     fingerprint: text(ref.fingerprint),
                 };
             }).filter(ref => ref.apiId && ref.name),

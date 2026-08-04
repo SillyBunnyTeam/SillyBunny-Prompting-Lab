@@ -41,6 +41,18 @@ export function createSettingsTab({ onChanged = null } = {}) {
             status.textContent = 'Choose a suite to export.';
             return;
         }
+        if (includeBaselines) {
+            // Baseline runs hold the full built prompts. The card-embedding
+            // path refuses to share captures outright; here the user decides,
+            // but only after being told what the file will hold.
+            const confirmed = globalThis.confirm?.(
+                'Baseline runs contain the complete prompts that were built, including chat messages, persona text, and lorebook entries. Anyone you give this file to can read them.\n\nExport them anyway?',
+            );
+            if (!confirmed) {
+                status.textContent = 'Nothing was exported.';
+                return;
+            }
+        }
         try {
             const cases = await lab.getSuiteCases(activeSuite);
             let baselineRuns = null;
@@ -265,7 +277,9 @@ export function createSettingsTab({ onChanged = null } = {}) {
         );
 
         const danger = button('Delete all saved runs', async () => {
-            const confirmed = globalThis.confirm?.('This deletes every saved run. Test cases and suites are kept. Continue?');
+            const confirmed = globalThis.confirm?.(
+                'This deletes every saved run, including the runs your baselines point at, so every suite starts over without baselines. Test cases and suites are kept. Continue?',
+            );
             if (!confirmed) {
                 return;
             }
@@ -274,7 +288,14 @@ export function createSettingsTab({ onChanged = null } = {}) {
                     await storage.deleteRun(testCase.id, entry.id);
                 }
             }
-            status.textContent = 'Deleted every saved run.';
+            // The baseline pointers now point at nothing; clearing them keeps
+            // every suite honest about having no baselines any more.
+            for (const suite of await storage.listSuites()) {
+                if (Object.keys(suite.baselines ?? {}).length) {
+                    await storage.saveSuite({ ...suite, baselines: {} });
+                }
+            }
+            status.textContent = 'Deleted every saved run and cleared every baseline.';
             onChanged?.();
         }, { className: 'menu_button sbpl-button' });
 

@@ -1,5 +1,5 @@
 import { copyPrompt, onClipboardChange, readClipboard } from '../clipboard.js';
-import { button, element, emptyState, errorMessage, field, promptField, replace, statusRegion } from '../dom.js';
+import { button, confirmButton, element, emptyState, errorMessage, field, promptField, replace, statusRegion } from '../dom.js';
 import { countTokens, getContext, listInstalledPresets, publishPreset, readInstalledPreset } from '../host.js';
 import { moduleToDraft, pastePromptModule } from '../prompt-drafts.js';
 import {
@@ -41,15 +41,17 @@ export function createPresetsTab({ onChanged = null, onPromptSaved = null } = {}
     let status = null;
     let reloadHost = null;
     let unsubscribeClipboard = null;
+    let pasteButton = null;
 
     let drafts = [];
     let editing = null;
     let expanded = '';
     let browsing = '';
+    let rawOpen = false;
 
-    async function reload() {
+    async function reload({ keepEditor = false } = {}) {
         drafts = await storage.listDrafts();
-        renderAll();
+        renderAll({ keepEditor });
         onChanged?.();
     }
 
@@ -236,14 +238,14 @@ export function createPresetsTab({ onChanged = null, onPromptSaved = null } = {}
                     await reload();
                 }, { className: 'menu_button sbpl-button' }),
                 button('Export', () => exportDraft(draft), { className: 'menu_button sbpl-button' }),
-                button('Delete', async () => {
+                confirmButton('Delete', async () => {
                     await storage.deleteDraft(draft.id);
                     if (editing?.id === draft.id) {
                         editing = null;
                     }
-                    status.textContent = `Deleted "${draft.name}".`;
+                    status.textContent = `Deleted "${draft.name}". Published copies in SillyBunny are not affected.`;
                     await reload();
-                }, { className: 'menu_button sbpl-button' }),
+                }, { className: 'menu_button sbpl-button', confirmLabel: 'Press again to delete' }),
             );
             item.append(label, actions);
             list.append(item);
@@ -390,10 +392,23 @@ export function createPresetsTab({ onChanged = null, onPromptSaved = null } = {}
 
     /* --------------------------------------------- chat completion modules */
 
+    /** Keeps the paste button honest about what the clipboard holds. */
+    function updatePasteButton() {
+        // The button is updated even before it is attached: it is created
+        // disabled-or-not from the clipboard state, then kept in sync.
+        if (!pasteButton) {
+            return;
+        }
+        const held = readClipboard();
+        pasteButton.disabled = !held;
+        pasteButton.title = held
+            ? `Paste "${held.prompt.name || held.prompt.identifier}", copied from ${held.sourceName}`
+            : 'Copy a prompt from another preset first';
+    }
+
     function renderPromptModules() {
         const wrapper = element('div', { className: 'sbpl-modules' });
         const head = element('div', { className: 'sbpl-modules-head' });
-        const held = readClipboard();
         const paste = button('Paste', () => {
             const clip = readClipboard();
             const result = pastePromptModule(editing.payload, clip?.prompt);
@@ -404,13 +419,9 @@ export function createPresetsTab({ onChanged = null, onPromptSaved = null } = {}
             editing.payload = result.payload;
             status.textContent = `Pasted "${clip.prompt.name || clip.prompt.identifier}" from ${clip.sourceName}.`;
             renderEditor();
-        }, {
-            className: 'menu_button sbpl-button',
-            title: held
-                ? `Paste "${held.prompt.name || held.prompt.identifier}", copied from ${held.sourceName}`
-                : 'Copy a prompt from another preset first',
-        });
-        paste.disabled = !held;
+        }, { className: 'menu_button sbpl-button' });
+        pasteButton = paste;
+        updatePasteButton();
         head.append(
             element('p', { className: 'sbpl-field-label', text: 'Prompt modules' }),
             button('Add module', () => {
@@ -587,6 +598,8 @@ export function createPresetsTab({ onChanged = null, onPromptSaved = null } = {}
 
     function renderRawEditor() {
         const details = element('details', { className: 'sbpl-raw' });
+        details.open = rawOpen;
+        details.addEventListener('toggle', () => { rawOpen = details.open; });
         details.append(element('summary', { text: 'All settings (text)' }));
         const { wrapper, textarea } = promptField('Preset contents', { rows: 12, macros: false, hint: 'Every setting this preset holds, including the ones without their own control above.' });
         textarea.value = JSON.stringify(editing.payload, null, 2);
@@ -599,7 +612,9 @@ export function createPresetsTab({ onChanged = null, onPromptSaved = null } = {}
                     return;
                 }
                 editing.payload = parsed;
-                note.textContent = 'Applied.';
+                // The editor is rebuilt to show the pasted settings, so the
+                // confirmation has to outlive this note.
+                status.textContent = 'Applied the text to this draft. The controls above now show it.';
                 renderEditor();
             } catch {
                 note.textContent = 'That is not valid preset text, so nothing was changed.';
@@ -618,9 +633,16 @@ export function createPresetsTab({ onChanged = null, onPromptSaved = null } = {}
         editing.publishedAs = savedName;
         await storage.saveDraft(editing);
         status.textContent = `Published "${savedName}". SillyBunny reads its preset lists while starting, so reload before using it.`;
-        replace(reloadHost, button('Reload SillyBunny', () => {
-            globalThis.location?.reload?.();
-        }, { className: 'menu_button menu_button_primary sbpl-button' }));
+        replace(
+            reloadHost,
+            button('Reload SillyBunny', () => {
+                globalThis.location?.reload?.();
+            }, { className: 'menu_button menu_button_primary sbpl-button' }),
+            element('p', {
+                className: 'sbpl-field-hint',
+                text: 'Your lab drafts are saved, but reloading discards anything unsaved elsewhere in SillyBunny, such as an unsent message.',
+            }),
+        );
         await reload();
     }
 
@@ -699,9 +721,13 @@ export function createPresetsTab({ onChanged = null, onPromptSaved = null } = {}
         await reload();
     }
 
-    function renderAll() {
+    function renderAll({ keepEditor = false } = {}) {
         renderLibrary();
-        renderEditor();
+        // A background refresh must not rebuild the editor mid-keystroke or
+        // wipe an open export review panel.
+        if (!(keepEditor && editorHost.hasChildNodes())) {
+            renderEditor();
+        }
     }
 
     function build() {
@@ -757,11 +783,9 @@ export function createPresetsTab({ onChanged = null, onPromptSaved = null } = {}
         libraryHost = element('div', { className: 'sbpl-preset-library' });
         editorHost = element('div', { className: 'sbpl-editor-host' });
         root.append(controls, field('Import a preset file', fileInput), status, reloadHost, libraryHost, editorHost);
-        unsubscribeClipboard = onClipboardChange(() => {
-            if (editing) {
-                renderEditor();
-            }
-        });
+        // Updating the button in place keeps focus and open panels intact
+        // when something is copied elsewhere in the lab.
+        unsubscribeClipboard = onClipboardChange(updatePasteButton);
         return root;
     }
 
@@ -776,11 +800,12 @@ export function createPresetsTab({ onChanged = null, onPromptSaved = null } = {}
             return root;
         },
         refresh() {
-            void reload().catch(() => {});
+            void reload({ keepEditor: true }).catch(() => {});
         },
         dispose() {
             unsubscribeClipboard?.();
             unsubscribeClipboard = null;
+            pasteButton = null;
             root?.remove();
             root = null;
         },

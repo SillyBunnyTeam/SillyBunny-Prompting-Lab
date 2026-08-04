@@ -177,12 +177,14 @@ const EVALUATORS = {
     [ASSERTION.WI_ACTIVATED](assertion, run) {
         const entries = allWorldInfoEntries(run);
         if (!entries.length && !run?.capture?.wiPasses?.length) {
+            // No scan ran at all. A scan that ran and activated nothing is
+            // recorded as an empty pass and handled below as a real answer.
             return {
                 pass: assertion.negate ? true : null,
                 actual: 0,
                 message: assertion.negate
-                    ? 'No lorebook entries were used, as expected.'
-                    : 'No lorebook activity was recorded for this run, so this could not be checked.',
+                    ? 'No lorebook scan ran, so no entry could have been used.'
+                    : 'No lorebook scan ran during this run, so this could not be checked.',
             };
         }
         const wanted = String(assertion.entryKey);
@@ -207,11 +209,18 @@ const EVALUATORS = {
 
     [ASSERTION.CACHE_PREFIX_STABLE](assertion, run) {
         const cache = run?.cache ?? {};
-        if (cache.source === 'unknown' || !cache.predictedBreakpoints?.length) {
+        if (cache.source === 'unknown') {
             return {
                 pass: null,
                 actual: null,
                 message: 'The prompt caching depth is not known, so the cached part of the prompt could not be checked. Set it in Prompting Lab settings.',
+            };
+        }
+        if (!cache.predictedBreakpoints?.length) {
+            return {
+                pass: null,
+                actual: null,
+                message: 'This conversation is too short for the server to place a cache boundary yet, so there is no cached part to check.',
             };
         }
         const unstable = (cache.volatileSpans ?? []).filter(span => span?.aboveBreakpoint);
@@ -220,7 +229,7 @@ const EVALUATORS = {
             actual: unstable.length,
             message: unstable.length === 0
                 ? 'The cached part of the prompt stays the same between runs.'
-                : `${unstable.length} piece${unstable.length === 1 ? '' : 's'} of the cached part of the prompt change between runs, which stops caching from working.`,
+                : `${unstable.length} piece${unstable.length === 1 ? '' : 's'} of the cached part of the prompt change between runs, so the server cannot reuse its cache.`,
         };
     },
 };

@@ -220,6 +220,19 @@ test('wi-activated reports no lorebook activity rather than failing', () => {
     assert.match(result.message, /could not be checked/);
 });
 
+test('wi-activated fails red when a scan ran and the entry stayed out', () => {
+    // A recorded pass that activated nothing is a definite answer: the scan
+    // happened and the entry was not used.
+    const scannedEmpty = run({ capture: { wiPasses: [[]] } });
+    const positive = evaluateAssertion({ type: ASSERTION.WI_ACTIVATED, entryKey: 'dragon' }, scannedEmpty);
+    assert.equal(positive.pass, false);
+    const negated = evaluateAssertion(
+        { type: ASSERTION.WI_ACTIVATED, entryKey: 'dragon', negate: true },
+        scannedEmpty,
+    );
+    assert.equal(negated.pass, true);
+});
+
 /* ------------------------------------------------------------- caching */
 
 test('cache-prefix-stable passes when nothing above the breakpoint moves', () => {
@@ -239,13 +252,23 @@ test('cache-prefix-stable fails when cached content changes between runs', () =>
     });
     const result = evaluateAssertion({ type: ASSERTION.CACHE_PREFIX_STABLE }, unstable);
     assert.equal(result.pass, false);
-    assert.match(result.message, /stops caching from working/);
+    assert.match(result.message, /cannot reuse its cache/);
 });
 
 test('cache-prefix-stable says so when the caching depth is unknown', () => {
     const result = evaluateAssertion({ type: ASSERTION.CACHE_PREFIX_STABLE }, run({ cache: { source: 'unknown' } }));
     assert.equal(result.pass, null);
     assert.match(result.message, /caching depth is not known/);
+});
+
+test('cache-prefix-stable tells a short conversation apart from a missing depth', () => {
+    const result = evaluateAssertion(
+        { type: ASSERTION.CACHE_PREFIX_STABLE },
+        run({ cache: { source: 'manual', predictedBreakpoints: [] } }),
+    );
+    assert.equal(result.pass, null);
+    assert.match(result.message, /too short/);
+    assert.doesNotMatch(result.message, /Set it in Prompting Lab settings/);
 });
 
 /* ------------------------------------------------------------ plumbing */

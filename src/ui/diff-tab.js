@@ -25,6 +25,7 @@ export function createDiffTab() {
     let cases = [];
     let activeCase = null;
     let runIndex = [];
+    let renderSeq = 0;
 
     async function reload() {
         suites = await storage.listSuites();
@@ -53,7 +54,11 @@ export function createDiffTab() {
     }
 
     async function reloadRuns() {
+        // A refresh must not silently swap a pair of runs the user chose.
+        const previousBase = baseSelect.value;
+        const previousCompare = compareSelect.value;
         runIndex = activeCase ? await storage.listRuns(activeCase.id) : [];
+        const has = id => runIndex.some(entry => entry.id === id);
         const baselineId = activeSuite?.baselines?.[activeCase?.id ?? ''] ?? '';
         const options = runIndex.map(entry => element('option', {
             text: `${describeWhen(entry.startedAt)} · ${STATUS_LABEL[entry.status] ?? entry.status}${entry.id === baselineId ? ' · baseline' : ''}`,
@@ -62,12 +67,16 @@ export function createDiffTab() {
         replace(baseSelect, ...options.map(node => node.cloneNode(true)));
         replace(compareSelect, ...options);
 
-        if (baselineId && runIndex.some(entry => entry.id === baselineId)) {
+        if (has(previousBase)) {
+            baseSelect.value = previousBase;
+        } else if (baselineId && has(baselineId)) {
             baseSelect.value = baselineId;
         } else if (runIndex.length > 1) {
             baseSelect.value = runIndex[1].id;
         }
-        if (runIndex.length) {
+        if (has(previousCompare)) {
+            compareSelect.value = previousCompare;
+        } else if (runIndex.length) {
             compareSelect.value = runIndex[0].id;
         }
         await render();
@@ -85,6 +94,9 @@ export function createDiffTab() {
     }
 
     async function render() {
+        // Two renders can overlap when selects change quickly; only the
+        // newest one may write, or the outputs stack up.
+        const seq = ++renderSeq;
         replace(output);
         if (!activeCase) {
             output.append(emptyState(
@@ -105,6 +117,9 @@ export function createDiffTab() {
             storage.getRun(baseSelect.value),
             storage.getRun(compareSelect.value),
         ]);
+        if (seq !== renderSeq) {
+            return;
+        }
         if (!baseline || !current) {
             output.append(emptyState('That run could not be loaded.', 'It may have been removed to save space.'));
             return;
@@ -281,12 +296,13 @@ export function createDiffTab() {
         });
         rawLabel.append(rawToggle, element('span', { text: 'Show parts that change every run' }));
 
-        const promote = button('Set the newer run as the baseline', async () => {
+        const promote = button('Set the "To" run as the baseline', async () => {
             if (!activeSuite || !activeCase || !compareSelect.value) {
                 return;
             }
+            const entry = runIndex.find(item => item.id === compareSelect.value);
             await lab.promoteBaseline(activeSuite, activeCase.id, compareSelect.value);
-            status.textContent = 'Saved as the baseline for this test case.';
+            status.textContent = `Saved the ${describeWhen(entry?.startedAt)} run as the baseline for this test case.`;
             await reload();
         }, { className: 'menu_button sbpl-button' });
 

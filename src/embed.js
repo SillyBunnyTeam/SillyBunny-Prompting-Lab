@@ -1,4 +1,4 @@
-import { EMBED_KEY, EMBED_VERSION } from './constants.js';
+import { EMBED_KEY, EMBED_VERSION, MAX_REGEX_LENGTH } from './constants.js';
 import { ctxOf, getContext } from './host.js';
 import { migrateCase, newId, normalizeCase } from './schema.js';
 
@@ -79,21 +79,33 @@ export function stripForEmbedding(testCase) {
             ...normalized.pins,
             characterAvatar: '',
             // Connection profiles and personas are local to an installation, so
-            // carrying them would only produce tests that cannot run.
+            // carrying them would only produce tests that cannot run. A Prompt
+            // Tags profile id is local too; the profile name still means
+            // something to a recipient who has a profile of the same name.
             connectionProfileId: '',
             personaKey: null,
+            promptTags: normalized.pins.promptTags?.profileName
+                ? { profileId: '', profileName: normalized.pins.promptTags.profileName }
+                : null,
         },
     };
 }
 
 /**
  * Prepares embedded cases for use in this installation: they are given fresh
- * identifiers and pinned to the character they came from.
+ * identifiers and pinned to the character they came from. A card is written by
+ * someone else, so checks that the file-import path would refuse — a search
+ * pattern over the length limit — are dropped here the same way.
  */
 export function adoptEmbeddedCases(cases, avatar) {
     return cases.map(item => normalizeCase({
         ...item,
         id: newId(),
+        assertions: (Array.isArray(item.assertions) ? item.assertions : [])
+            .filter(assertion => !(assertion?.type === 'content-match'
+                && assertion?.mode === 'regex'
+                && typeof assertion?.value === 'string'
+                && assertion.value.length > MAX_REGEX_LENGTH)),
         pins: { ...item.pins, characterAvatar: avatar },
     }));
 }

@@ -135,10 +135,14 @@ export function parseImport(text) {
     const baselineRuns = (Array.isArray(payload.baselineRuns) ? payload.baselineRuns : [])
         .map(run => migrateRun(run))
         .filter(Boolean)
+        // A run whose case is not in the file would be stored under a case id
+        // this installation has never seen (or worse, someone else's), so it
+        // is dropped the same way dangling baseline pointers are below.
+        .filter(run => caseIdMap.has(run.caseId))
         .map((run) => {
             const id = newId();
             runIdMap.set(run.id, id);
-            return { ...run, id, caseId: caseIdMap.get(run.caseId) ?? run.caseId };
+            return { ...run, id, caseId: caseIdMap.get(run.caseId) };
         });
 
     const baselines = {};

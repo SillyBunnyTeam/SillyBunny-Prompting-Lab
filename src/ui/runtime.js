@@ -165,6 +165,26 @@ export function mountRuntimeUi({ signal = null } = {}) {
             if (event.key === 'Escape') {
                 event.stopPropagation();
                 closePage();
+                return;
+            }
+            // aria-modal promises the app behind the page is unreachable, so
+            // Tab has to wrap inside the page instead of escaping it.
+            if (event.key === 'Tab') {
+                const focusable = [...page.querySelectorAll(
+                    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+                )].filter(node => !node.disabled && node.getClientRects().length > 0);
+                if (!focusable.length) {
+                    return;
+                }
+                const first = focusable[0];
+                const last = focusable[focusable.length - 1];
+                if (event.shiftKey && document.activeElement === first) {
+                    event.preventDefault();
+                    last.focus();
+                } else if (!event.shiftKey && document.activeElement === last) {
+                    event.preventDefault();
+                    first.focus();
+                }
             }
         });
         document.body.append(page);

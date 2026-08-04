@@ -178,9 +178,13 @@ test('world info passes are accumulated across recursion rounds', async () => {
     });
     await eventSource.emit(EVENTS.WORLDINFO_SCAN_DONE, { activated: { entries: new Set() } });
     const passes = session.getState().wiPasses;
-    assert.equal(passes.length, 2);
+    assert.equal(passes.length, 3);
     assert.equal(passes[0][0].comment, 'Dragon');
     assert.equal(passes[1][0].uid, 2);
+    // An empty pass is kept: a scan that activated nothing is a definite
+    // answer, which is what lets an "entry activates" check fail rather than
+    // come back unanswerable.
+    assert.deepEqual(passes[2], []);
     session.detach();
 });
 

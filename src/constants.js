@@ -112,7 +112,7 @@ export const CAVEAT = Object.freeze({
 
 export const CAVEAT_TEXT = Object.freeze({
     [CAVEAT.NO_INTERCEPTORS]: 'Extensions that rewrite chat history before sending, such as vector storage and summaries, do not run during a test. A real reply may include content this test does not show.',
-    [CAVEAT.NO_SQUASH_LIVE]: 'Merging of consecutive system messages was calculated by Prompting Lab rather than performed by SillyBunny, so message grouping may differ slightly from a real send.',
+    [CAVEAT.NO_SQUASH_LIVE]: 'Your setup merges consecutive system messages when sending. This analysis models that grouping itself rather than observing a real send, so message grouping may differ slightly.',
     [CAVEAT.PROMPT_TAGS_MISSING]: 'This test pins a Prompt Tags profile, but the Prompt Tags extension is not installed or enabled.',
     [CAVEAT.CACHE_DEPTH_UNKNOWN]: 'The prompt caching depth is unknown, so cache checks were skipped. Set it in Prompting Lab settings.',
     [CAVEAT.CACHE_BOUNDARY_PREDICTED]: 'Cache boundaries are predictions inferred from the captured prompt. The server does not report the actual boundary; this analysis follows Claude-style caching.',

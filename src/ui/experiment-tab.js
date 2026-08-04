@@ -137,6 +137,7 @@ export function createExperimentTab() {
         }
 
         controller = new AbortController();
+        const { signal } = controller;
         updateControls();
         lastResult = null;
         replace(output);
@@ -156,7 +157,7 @@ export function createExperimentTab() {
                 scenario,
                 profileId: profileSelect.value,
                 maxTokens: getSettings().abMaxTokens,
-                signal: controller.signal,
+                signal,
             });
             lastResult = {
                 replies,
@@ -167,7 +168,7 @@ export function createExperimentTab() {
             };
             renderReplies(replies);
             renderAnalysisControls();
-            status.textContent = 'Finished.';
+            status.textContent = signal.aborted ? 'Stopped.' : 'Finished.';
         } catch (error) {
             status.textContent = `The replies could not be fetched: ${errorMessage(error)}`;
         } finally {

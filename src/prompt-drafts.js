@@ -29,7 +29,7 @@ export function addVersion(draft, { label = '', content = null } = {}) {
     const now = new Date().toISOString();
     const version = {
         id: newId(),
-        label: label || nextVersionLabel(normalized),
+        label: label ? uniqueLabel(normalized, label) : nextVersionLabel(normalized),
         content: typeof content === 'string' ? content : (getSelectedVersion(normalized)?.content ?? ''),
         createdAt: now,
         updatedAt: now,
@@ -39,6 +39,21 @@ export function addVersion(draft, { label = '', content = null } = {}) {
         versions: [...normalized.versions, version],
         selectedVersionId: version.id,
     };
+}
+
+/**
+ * Labels have to stay distinct or the draft cannot be saved, so a requested
+ * label that is already taken gets a counter instead of blocking the save.
+ */
+function uniqueLabel(draft, wanted) {
+    const taken = new Set(draft.versions.map(version => version.label.trim().toLowerCase()));
+    let label = wanted;
+    let counter = 2;
+    while (taken.has(label.trim().toLowerCase())) {
+        label = `${wanted} ${counter}`;
+        counter += 1;
+    }
+    return label;
 }
 
 export function updateVersion(draft, versionId, changes) {

@@ -173,7 +173,11 @@ export function toClaudeShape(messages, options = {}) {
             userIndex += 1;
         }
         if (userIndex >= converted.length) {
-            converted.splice(index + 1, 0, { role: 'user', content: [] });
+            // No user turn follows, so the host appends one at the very end to
+            // carry the images. Appending (not inserting mid-way) keeps the
+            // role-switch count identical to a real send.
+            converted.push({ role: 'user', content: [] });
+            userIndex = converted.length - 1;
         }
         converted[userIndex].content.push(...images);
         message.content = message.content.filter(part => part?.type !== 'image');
@@ -381,7 +385,6 @@ export function analyzeCache({
     const breakpoints = known ? predictCacheBreakpoints(effective, cachingAtDepth) : [];
     const prefix = prefixText(effective, breakpoints);
 
-    const sectionOrder = new Map(sections.map((section, index) => [section.id, index]));
     const spans = volatileSpans.map((span) => {
         const explained = explainSpan(span, {
             deps,
@@ -393,7 +396,7 @@ export function analyzeCache({
             ...explained,
             // Without a boundary there is no cached region, so nothing can sit
             // above one. Saying "above" here would invent a problem.
-            aboveBreakpoint: breakpoints.length ? isSpanInPrefix(span, prefix, sectionOrder) : false,
+            aboveBreakpoint: breakpoints.length ? isSpanInPrefix(span, prefix) : false,
         };
     });
 
@@ -406,18 +409,24 @@ export function analyzeCache({
     };
 }
 
-function isSpanInPrefix(span, prefix, sectionOrder) {
+/**
+ * The bare span text is a poor locator: a short volatile value such as a die
+ * roll matches almost anywhere, and a pure insertion has no text at all. The
+ * unchanged anchors recorded around the span are what actually place it, so
+ * they are checked first. A span that cannot be located is treated as outside
+ * the cached prefix: a missed warning reads better than an invented one.
+ */
+const BARE_TEXT_MATCH_MINIMUM = 16;
+
+function isSpanInPrefix(span, prefix) {
     if (!prefix) {
         return false;
     }
     const text = String(span?.text ?? '');
-    if (text && prefix.includes(text)) {
-        return true;
+    const before = String(span?.anchorBefore ?? '');
+    const after = String(span?.anchorAfter ?? '');
+    if (before || after) {
+        return prefix.includes(`${before}${text}${after}`);
     }
-    // A span that is empty on one side (text was added, not changed) cannot be
-    // located by its own content, so fall back to where its section sits.
-    if (!text && span?.section && sectionOrder.has(span.section)) {
-        return true;
-    }
-    return false;
+    return text.length >= BARE_TEXT_MATCH_MINIMUM && prefix.includes(text);
 }

@@ -137,7 +137,13 @@ test('a volatile span inside the cached part is flagged', () => {
     ];
     const report = analyzeCache({
         messages,
-        volatileSpans: [{ section: 'main', text: 'Tuesday', otherText: 'Wednesday' }],
+        volatileSpans: [{
+            section: 'main',
+            text: 'Tuesday',
+            otherText: 'Wednesday',
+            anchorBefore: 'Today is ',
+            anchorAfter: '. Be helpful.',
+        }],
         cachingAtDepth: 0,
         useSysPrompt: false,
         hash: text => text.length,
@@ -146,6 +152,71 @@ test('a volatile span inside the cached part is flagged', () => {
     assert.ok(report.predictedBreakpoints.length);
     assert.equal(report.volatileSpans[0].aboveBreakpoint, true);
     assert.ok(report.prefixHash);
+});
+
+test('an inserted value below the boundary is not blamed on the cached part', () => {
+    // "turn 5." became "turn 15.": a pure insertion in the newest message,
+    // which sits below the cache boundary. This used to be flagged as a cache
+    // problem purely because its section existed in the capture.
+    const messages = [
+        { role: 'user', content: 'Stable rules.' },
+        { role: 'assistant', content: 'ok' },
+        { role: 'user', content: 'turn 5.' },
+    ];
+    const report = analyzeCache({
+        messages,
+        sections: [{ id: 'chatHistory', label: 'Chat history', content: 'turn 5.', tokens: 3 }],
+        volatileSpans: [{
+            section: 'chatHistory',
+            text: '',
+            otherText: '1',
+            anchorBefore: 'turn ',
+            anchorAfter: '5.',
+        }],
+        cachingAtDepth: 1,
+        useSysPrompt: false,
+        hash: text => text.length,
+    });
+    assert.ok(report.predictedBreakpoints.length, 'the boundary itself is placed');
+    assert.equal(report.volatileSpans[0].aboveBreakpoint, false);
+});
+
+test('an inserted value inside the cached part is still caught by its anchors', () => {
+    const messages = [
+        { role: 'user', content: 'Stable rules here.' },
+        { role: 'assistant', content: 'ok' },
+        { role: 'user', content: 'turn 5.' },
+    ];
+    const report = analyzeCache({
+        messages,
+        volatileSpans: [{
+            section: 'main',
+            text: '',
+            otherText: 'extra ',
+            anchorBefore: 'Stable ',
+            anchorAfter: 'rules',
+        }],
+        cachingAtDepth: 1,
+        useSysPrompt: false,
+        hash: text => text.length,
+    });
+    assert.equal(report.volatileSpans[0].aboveBreakpoint, true);
+});
+
+test('a short bare value without anchors is not matched by coincidence', () => {
+    const messages = [
+        { role: 'user', content: 'Rule 4 applies here.' },
+        { role: 'assistant', content: 'ok' },
+        { role: 'user', content: 'rolled a 4' },
+    ];
+    const report = analyzeCache({
+        messages,
+        volatileSpans: [{ section: 'chatHistory', text: '4', otherText: '2' }],
+        cachingAtDepth: 1,
+        useSysPrompt: false,
+        hash: text => text.length,
+    });
+    assert.equal(report.volatileSpans[0].aboveBreakpoint, false);
 });
 
 test('a volatile span below the cached part is not flagged', () => {
@@ -259,6 +330,18 @@ test('toClaudeShape relocates assistant images and appends an assistant prefill'
         },
         { role: 'assistant', content: [{ type: 'text', text: ' answer' }] },
     ]);
+});
+
+test('assistant images with no later user turn ride a user turn appended at the end', () => {
+    const shaped = toClaudeShape([
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,abc' } }] },
+        { role: 'assistant', content: 'more' },
+    ], { useSysPrompt: false });
+    assert.deepEqual(shaped.map(message => message.role), ['user', 'assistant', 'user'],
+        'no empty user turn may be wedged between the two assistant turns');
+    assert.deepEqual(shaped[1].content.map(part => part.text), ['look', 'more']);
+    assert.equal(shaped[2].content[0].type, 'image');
 });
 
 test('toClaudeShape mirrors the host tool fallback and named examples', () => {

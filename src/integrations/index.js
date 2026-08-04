@@ -14,7 +14,7 @@ export async function collectIntegrations(hostRef) {
     return {
         promptTags,
         macroEnhanced,
-        profileName: promptTags?.connectionProfileName ?? '',
+        profileName: promptTags?.profileName ?? '',
         caveats,
     };
 }

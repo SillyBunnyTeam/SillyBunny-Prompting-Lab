@@ -1,5 +1,5 @@
 import { copyPrompt } from '../clipboard.js';
-import { button, element, emptyState, errorMessage, field, formatTokens, promptField, replace, statusRegion } from '../dom.js';
+import { button, confirmButton, element, emptyState, errorMessage, field, formatTokens, promptField, replace, statusRegion } from '../dom.js';
 import { countTokens } from '../host.js';
 import {
     addVersion,
@@ -33,10 +33,10 @@ export function createPromptsTab({ onChanged = null } = {}) {
     let editing = null;
     let expandedVersion = '';
 
-    async function reload() {
+    async function reload({ keepEditor = false } = {}) {
         prompts = await storage.listPromptDrafts();
         presetDrafts = (await storage.listDrafts()).filter(draft => draft.apiId === 'openai');
-        renderAll();
+        renderAll({ keepEditor });
     }
 
     function matches(prompt) {
@@ -91,14 +91,14 @@ export function createPromptsTab({ onChanged = null } = {}) {
                     status.textContent = `Duplicated "${prompt.title}".`;
                     await reload();
                 }, { className: 'menu_button sbpl-button' }),
-                button('Delete', async () => {
+                confirmButton('Delete', async () => {
                     await storage.deletePromptDraft(prompt.id);
                     if (editing?.id === prompt.id) {
                         editing = null;
                     }
-                    status.textContent = `Deleted "${prompt.title}".`;
+                    status.textContent = `Deleted "${prompt.title}" and every draft it held.`;
                     await reload();
-                }, { className: 'menu_button sbpl-button' }),
+                }, { className: 'menu_button sbpl-button', confirmLabel: 'Press again to delete' }),
             );
             item.append(label, actions);
             list.append(item);
@@ -325,9 +325,12 @@ export function createPromptsTab({ onChanged = null } = {}) {
         await reload();
     }
 
-    function renderAll() {
+    function renderAll({ keepEditor = false } = {}) {
         renderList();
-        renderEditor();
+        // A background refresh must not rebuild the editor mid-keystroke.
+        if (!(keepEditor && editorHost.hasChildNodes())) {
+            renderEditor();
+        }
     }
 
     function build() {
@@ -377,7 +380,7 @@ export function createPromptsTab({ onChanged = null } = {}) {
             return root;
         },
         refresh() {
-            void reload().catch(() => {});
+            void reload({ keepEditor: true }).catch(() => {});
         },
         dispose() {
             root?.remove();

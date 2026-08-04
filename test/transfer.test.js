@@ -117,6 +117,19 @@ test('baseline pointers are rewritten to follow the new identifiers', () => {
     assert.equal(imported.baselineRuns[0].caseId, newCaseId);
 });
 
+test('runs for cases missing from the file are dropped on import', () => {
+    const { suite, cases } = sampleSuite();
+    suite.baselines = { [cases[0].id]: 'run-1' };
+    const runs = [
+        { v: 1, id: 'run-1', caseId: cases[0].id, status: 'pass' },
+        { v: 1, id: 'run-ghost', caseId: 'case-not-in-this-file', status: 'pass' },
+    ];
+    const payload = JSON.parse(buildExport(suite, cases, runs).text);
+    const imported = parseImport(JSON.stringify(payload));
+    assert.equal(imported.baselineRuns.length, 1, 'the orphan run must not be stored under a foreign case id');
+    assert.equal(imported.baselineRuns[0].caseId, imported.cases[0].id);
+});
+
 test('importing the same file twice produces two separate suites', () => {
     const { suite, cases } = sampleSuite();
     const text = buildExport(suite, cases).text;
@@ -215,6 +228,33 @@ test('a card with no tests reads as empty', () => {
     const context = { characters: [{ avatar: 'aqua.png', data: { extensions: {} } }] };
     assert.deepEqual(readEmbeddedCases(context, 'aqua.png'), []);
     assert.deepEqual(readEmbeddedCases(context, 'nope.png'), []);
+});
+
+test('embedding keeps a Prompt Tags profile name but not the local id', () => {
+    const stripped = stripForEmbedding(createCase({
+        name: 'Tagged',
+        pins: {
+            characterAvatar: 'aqua.png',
+            promptTags: { profileId: 'local-1', profileName: 'Tagged profile' },
+        },
+    }));
+    assert.equal(stripped.pins.promptTags.profileName, 'Tagged profile');
+    assert.equal(stripped.pins.promptTags.profileId, '');
+});
+
+test('adopting drops oversized regex checks the way file import refuses them', () => {
+    const adopted = adoptEmbeddedCases([{
+        v: 2,
+        id: 'embedded-1',
+        name: 'From a shared card',
+        assertions: [
+            { type: 'content-match', mode: 'regex', value: 'a'.repeat(600) },
+            { type: 'content-match', mode: 'contains', value: 'safe text' },
+        ],
+        pins: {},
+    }], 'aqua.png');
+    assert.equal(adopted[0].assertions.length, 1);
+    assert.equal(adopted[0].assertions[0].value, 'safe text');
 });
 
 test('adopting embedded cases pins them to the card they came from', () => {

@@ -1,5 +1,5 @@
 import { ASSERTION, ASSERTION_LABEL, SECTION_LABEL } from '../constants.js';
-import { button, element, emptyState, errorMessage, field, promptField, replace, statusRegion } from '../dom.js';
+import { button, confirmButton, element, emptyState, errorMessage, field, promptField, replace, statusRegion } from '../dom.js';
 import { getContext } from '../host.js';
 import * as lab from '../lab.js';
 import { MODE, PRESET_API_IDS, labelForApiId, modeOf } from '../presets.js';
@@ -27,7 +27,7 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
     let editing = null;
     let selected = new Set();
 
-    async function reload() {
+    async function reload({ keepEditor = false } = {}) {
         suites = await storage.listSuites();
         if (!activeSuite || !suites.some(suite => suite.id === activeSuite.id)) {
             activeSuite = suites[0] ?? null;
@@ -36,7 +36,7 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
         }
         cases = activeSuite ? await lab.getSuiteCases(activeSuite) : [];
         selected = new Set([...selected].filter(id => cases.some(item => item.id === id)));
-        renderAll();
+        renderAll({ keepEditor });
         onChanged?.();
     }
 
@@ -130,14 +130,14 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
                 button('Duplicate', () => {
                     void duplicate([testCase]);
                 }, { className: 'menu_button sbpl-button' }),
-                button('Delete', async () => {
+                confirmButton('Delete', async () => {
                     await storage.deleteCase(testCase.id);
                     if (editing?.id === testCase.id) {
                         editing = null;
                     }
-                    status.textContent = `Deleted "${testCase.name}".`;
+                    status.textContent = `Deleted "${testCase.name}". Its saved runs went with it.`;
                     await reload();
-                }, { className: 'menu_button sbpl-button' }),
+                }, { className: 'menu_button sbpl-button', confirmLabel: 'Press again to delete' }),
             );
             if (onQuickRun) {
                 actions.prepend(button('Run this one', () => onQuickRun(testCase), {
@@ -191,16 +191,16 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
                     status.textContent = `Tagged ${selected.size} test case${selected.size === 1 ? '' : 's'} with "${tag}".`;
                     await reload();
                 }, { className: 'menu_button sbpl-button' }),
-                button('Delete', async () => {
+                confirmButton('Delete', async () => {
                     const count = selected.size;
                     for (const testCase of chosen()) {
                         await storage.deleteCase(testCase.id);
                     }
                     selected.clear();
                     editing = null;
-                    status.textContent = `Deleted ${count} test case${count === 1 ? '' : 's'}.`;
+                    status.textContent = `Deleted ${count} test case${count === 1 ? '' : 's'}, along with their saved runs.`;
                     await reload();
-                }, { className: 'menu_button sbpl-button' }),
+                }, { className: 'menu_button sbpl-button', confirmLabel: 'Press again to delete' }),
             );
         }
         return bar;
@@ -296,9 +296,15 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
         promptTagsSelect.disabled = !options.promptTagsProfiles.length && !pinnedPromptTags?.profileName;
         promptTagsSelect.addEventListener('change', () => {
             const profile = options.promptTagsProfiles.find(item => item.name === promptTagsSelect.value);
-            editing.pins.promptTags = profile
-                ? { profileId: profile.id, profileName: profile.name }
-                : (promptTagsSelect.value === '' ? null : editing.pins.promptTags);
+            if (profile) {
+                editing.pins.promptTags = { profileId: profile.id, profileName: profile.name };
+            } else if (promptTagsSelect.value === '') {
+                editing.pins.promptTags = null;
+            } else if (pinnedPromptTags?.profileName === promptTagsSelect.value) {
+                // The pinned profile is not installed right now; re-choosing
+                // it restores the original pin rather than losing it.
+                editing.pins.promptTags = { ...pinnedPromptTags };
+            }
         });
 
         const notesInput = element('textarea', { className: 'text_pole sbpl-textarea', attributes: { rows: '2' } });
@@ -667,10 +673,14 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
         return wrapper;
     }
 
-    function renderAll() {
+    function renderAll({ keepEditor = false } = {}) {
         renderSuiteSelect();
         renderList();
-        renderEditor();
+        // A background refresh (a host event, another tab's change) must not
+        // rebuild the form mid-keystroke or wipe an open matrix panel.
+        if (!(keepEditor && editorHost.hasChildNodes())) {
+            renderEditor();
+        }
     }
 
     function build() {
@@ -737,7 +747,7 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
             return root;
         },
         refresh() {
-            void reload().catch(() => {});
+            void reload({ keepEditor: true }).catch(() => {});
         },
         dispose() {
             root?.remove();

@@ -93,6 +93,17 @@ test('addVersion can carry its own label and content', () => {
     assert.equal(getSelectedVersion(draft).content, 'Short.');
 });
 
+test('a taken label gets a counter instead of blocking the save', () => {
+    let draft = addVersion(createPromptDraft({}), { label: 'Terse' });
+    draft = addVersion(draft, { label: 'Terse' });
+    draft = addVersion(draft, { label: 'terse' });
+    assert.deepEqual(
+        draft.versions.map(version => version.label),
+        ['Draft 1', 'Terse', 'Terse 2', 'terse 3'],
+    );
+    assert.deepEqual(validatePromptDraft(draft), []);
+});
+
 test('updateVersion cannot change a version id', () => {
     const draft = createPromptDraft({});
     const versionId = draft.selectedVersionId;

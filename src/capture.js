@@ -322,10 +322,10 @@ export function createCaptureSession(hostRef = getContext) {
     };
 
     const onWorldInfoScanDone = (payload) => {
-        const pass = extractWorldInfoPass(payload);
-        if (pass.length) {
-            state.wiPasses.push(pass);
-        }
+        // An empty pass is still a pass: a scan that activated nothing is a
+        // definite answer, not a missing measurement. Dropping it would make
+        // "entry activates" checks unanswerable instead of failed.
+        state.wiPasses.push(extractWorldInfoPass(payload));
     };
 
     return {
