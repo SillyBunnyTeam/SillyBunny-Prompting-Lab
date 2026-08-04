@@ -12,7 +12,7 @@ import { migrateCase, newId, normalizeCase } from './schema.js';
  */
 
 /** What a user is agreeing to when they save a test into a card. */
-export const PRIVACY_NOTICE = 'These test cases will be saved inside the character card. Anyone you share the card with will receive them, including the example message and any text you are checking for. Saved results are never included.';
+export const PRIVACY_NOTICE = 'These test cases will be saved inside the character card. Anyone you share the card with will receive them, including the example message and any text you are checking for. Saved runs are never included.';
 
 export function findCharacterIndexByAvatar(hostRef, avatar) {
     const characters = ctxOf(hostRef)?.characters ?? [];

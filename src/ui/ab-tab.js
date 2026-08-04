@@ -199,7 +199,7 @@ export function createAbTab() {
         });
 
         sendButton = button('Get both replies', () => { void send(); }, {
-            className: 'menu_button sbpl-button sbpl-button-primary',
+            className: 'menu_button menu_button_primary sbpl-button',
         });
         cancelButton = button('Stop', () => {
             controller?.abort();
@@ -218,7 +218,7 @@ export function createAbTab() {
         root.append(
             element('p', {
                 className: 'sbpl-settings-note',
-                text: 'This sends a saved prompt to the models you choose and shows both replies. Unlike the rest of Prompting Lab, it uses tokens. Nothing is added to any chat, and the connection you are using does not change.',
+                text: 'This sends one saved prompt through two connections and compares their replies. Unlike prompt tests, it uses tokens. Nothing is added to any chat, and your active connection does not change.',
             }),
             pickers,
             profilePickers,
@@ -239,7 +239,7 @@ export function createAbTab() {
             if (!runIndex.length) {
                 replace(output, emptyState(
                     'No saved runs yet.',
-                    'Run a test case first. Its captured prompt is what gets sent here.',
+                    'Run a test case first. Its saved prompt is what gets sent here.',
                 ));
             }
             return root;

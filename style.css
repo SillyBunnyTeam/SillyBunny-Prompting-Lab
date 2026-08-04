@@ -146,8 +146,10 @@
     font-weight: 600;
 }
 
-.sbpl-button {
+.menu_button.sbpl-button {
+    width: auto;
     min-height: 2.4em;
+    white-space: nowrap;
 }
 
 .sbpl-empty {

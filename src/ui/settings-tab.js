@@ -51,7 +51,7 @@ export function createSettingsTab({ onChanged = null } = {}) {
             }
             const { text, size, kind } = buildExport(activeSuite, cases, baselineRuns);
             downloadExport(suggestedFileName(activeSuite), text);
-            status.textContent = `Exported ${cases.length} test case${cases.length === 1 ? '' : 's'} (${formatSize(size)})${kind === 'suite-with-baselines' ? ', including saved results' : ''}.`;
+            status.textContent = `Exported ${cases.length} test case${cases.length === 1 ? '' : 's'} (${formatSize(size)})${kind === 'suite-with-baselines' ? ', including baseline runs' : ''}.`;
         } catch (error) {
             status.textContent = `The suite could not be exported: ${errorMessage(error)}`;
         }
@@ -69,7 +69,7 @@ export function createSettingsTab({ onChanged = null } = {}) {
             }
             await storage.saveSuite(suite);
             activeSuite = suite;
-            status.textContent = `Imported "${suite.name}" with ${cases.length} test case${cases.length === 1 ? '' : 's'}${baselineRuns.length ? ' and its saved results' : ''}.`;
+            status.textContent = `Imported "${suite.name}" with ${cases.length} test case${cases.length === 1 ? '' : 's'}${baselineRuns.length ? ' and its baseline runs' : ''}.`;
             await reload();
             onChanged?.();
         } catch (error) {
@@ -161,7 +161,7 @@ export function createSettingsTab({ onChanged = null } = {}) {
         retention.addEventListener('change', () => {
             const next = updateSettings({ runRetention: Number(retention.value) });
             retention.value = String(next.runRetention);
-            status.textContent = `Keeping the newest ${next.runRetention} results for each test case.`;
+            status.textContent = `Keeping the newest ${next.runRetention} runs for each test case.`;
         });
 
         const depth = element('input', {
@@ -200,11 +200,11 @@ export function createSettingsTab({ onChanged = null } = {}) {
         transfer.append(
             suiteSelect,
             button('Export suite', () => { void exportSuite(false); }, { className: 'menu_button sbpl-button' }),
-            button('Export with saved results', () => { void exportSuite(true); }, { className: 'menu_button sbpl-button' }),
+            button('Export with baselines', () => { void exportSuite(true); }, { className: 'menu_button sbpl-button' }),
         );
 
-        const danger = button('Delete all saved results', async () => {
-            const confirmed = globalThis.confirm?.('This deletes every saved result. Test cases and suites are kept. Continue?');
+        const danger = button('Delete all saved runs', async () => {
+            const confirmed = globalThis.confirm?.('This deletes every saved run. Test cases and suites are kept. Continue?');
             if (!confirmed) {
                 return;
             }
@@ -213,7 +213,7 @@ export function createSettingsTab({ onChanged = null } = {}) {
                     await storage.deleteRun(testCase.id, entry.id);
                 }
             }
-            status.textContent = 'Deleted every saved result.';
+            status.textContent = 'Deleted every saved run.';
             onChanged?.();
         }, { className: 'menu_button sbpl-button' });
 
@@ -221,8 +221,8 @@ export function createSettingsTab({ onChanged = null } = {}) {
         embedHost = element('div', { className: 'sbpl-embed-section' });
 
         root.append(
-            field('Results kept for each test case', retention, {
-                hint: 'Older results are removed to save space. A result set as a baseline is always kept.',
+            field('Runs kept for each test case', retention, {
+                hint: 'Older runs are removed to save space. A run set as a baseline is always kept.',
             }),
             field('Prompt caching depth', depth, {
                 hint: 'Only needed for the caching check. Your server administrator sets this value; leave it empty to skip those checks.',

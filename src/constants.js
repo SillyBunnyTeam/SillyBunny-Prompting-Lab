@@ -122,10 +122,10 @@ export const TAB = Object.freeze({
 });
 
 export const TAB_LABEL = Object.freeze({
-    [TAB.CASES]: 'Test cases',
-    [TAB.RUN]: 'Run',
-    [TAB.DIFF]: 'Compare',
-    [TAB.AB]: 'Side by side',
+    [TAB.CASES]: 'Tests',
+    [TAB.RUN]: 'Run tests',
+    [TAB.DIFF]: 'Compare runs',
+    [TAB.AB]: 'Compare models',
     [TAB.SETTINGS]: 'Settings',
 });
 

@@ -225,7 +225,7 @@ export function createCasesTab({ onChanged = null } = {}) {
             editing = null;
             status.textContent = `Saved "${saved.name}".`;
             await reload();
-        }, { className: 'menu_button sbpl-button sbpl-button-primary' });
+        }, { className: 'menu_button menu_button_primary sbpl-button' });
 
         const cancel = button('Cancel', () => {
             editing = null;
@@ -306,21 +306,21 @@ export function createCasesTab({ onChanged = null } = {}) {
             renderAll();
         });
 
-        const newSuite = button('New suite', async () => {
+        const newSuite = button('Create suite', async () => {
             const suite = await storage.saveSuite(createSuite({ name: `Suite ${suites.length + 1}` }));
             activeSuite = suite;
             status.textContent = `Created "${suite.name}".`;
             await reload();
         }, { className: 'menu_button sbpl-button' });
 
-        const newCase = button('New test case', () => {
+        const newCase = button('Add test case', () => {
             if (!activeSuite) {
                 status.textContent = 'Create a suite first.';
                 return;
             }
             editing = createCase({ name: `Test case ${cases.length + 1}` });
             renderEditor();
-        }, { className: 'menu_button sbpl-button sbpl-button-primary' });
+        }, { className: 'menu_button menu_button_primary sbpl-button' });
 
         controls.append(suiteSelect, newSuite, newCase);
         status = statusRegion('');

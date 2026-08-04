@@ -96,7 +96,7 @@ function describeSendError(error) {
         return 'The Connection Manager extension is turned off, so a profile cannot be used.';
     }
     if (/does not support chat completions/i.test(message)) {
-        return 'This connection profile cannot be used for side-by-side replies.';
+        return 'This connection profile cannot be used to compare model replies.';
     }
     if (/aborted|AbortError/i.test(message)) {
         return 'Stopped before the model replied.';

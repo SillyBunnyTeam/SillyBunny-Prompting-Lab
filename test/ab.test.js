@@ -103,7 +103,7 @@ test('a missing connection manager is explained in plain language', async () => 
 test('backend errors are turned into plain language', async () => {
     const cases = [
         ['Connection Manager is not available', /turned off/],
-        ['API type openai does not support chat completions', /cannot be used for side-by-side/],
+        ['API type openai does not support chat completions', /cannot be used to compare model replies/],
         ['The operation was aborted', /Stopped before the model replied/],
         ['rate limited', /rate limited/],
     ];

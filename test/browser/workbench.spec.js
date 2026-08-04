@@ -8,13 +8,22 @@ test.beforeEach(async ({ page }) => {
 test('the settings drawer and wand item mount on app ready', async ({ page }) => {
     await expect(page.locator('#sbpl-settings')).toBeAttached();
     await expect(page.locator('#sbpl-menu-item')).toBeAttached();
+    await expect(page.locator('#sbpl-workbench')).toBeAttached();
+    await expect(page.locator('.sbpl-settings-open')).toHaveCount(0);
     await expect(page.locator('#sbpl-settings .extension_name')).toHaveText('Prompting Lab');
 });
 
 test('the drawer header carries a unique name so the shell can find it', async ({ page }) => {
     const drawer = page.locator('#sbpl-settings');
     await expect(drawer).toHaveAttribute('data-extension-name', 'SillyBunny-Prompting-Lab');
+    await expect(drawer).not.toHaveAttribute('data-sb-drawer-persistence', 'off');
     await expect(drawer.locator('.inline-drawer-toggle')).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('opening the settings drawer shows the lab without a second open action', async ({ page }) => {
+    await page.locator('#extensions-settings-button > .drawer-toggle').click();
+    await page.locator('#sbpl-settings > .inline-drawer-toggle').click();
+    await expect(page.locator('#sbpl-workbench')).toBeVisible();
 });
 
 test('the wand item opens the extensions surface and reveals the workbench', async ({ page }) => {
@@ -28,6 +37,7 @@ test('the workbench exposes every tab and marks one as selected', async ({ page 
     await page.locator('#sbpl-menu-item').click();
     const tabs = page.locator('#sbpl-workbench .sbpl-tab');
     await expect(tabs).toHaveCount(5);
+    await expect(tabs).toHaveText(['Tests', 'Run tests', 'Compare runs', 'Compare models', 'Settings']);
     await expect(page.locator('.sbpl-tab[aria-selected="true"]')).toHaveCount(1);
 });
 
@@ -68,8 +78,7 @@ test('the page never scrolls sideways on a narrow screen', async ({ page }) => {
 
 test('a ready host is reported as ready', async ({ page }) => {
     await page.evaluate(() => globalThis.fixtureSetAvailability({ ok: true, warnings: [] }));
-    await expect(page.locator('#sbpl-settings .sbpl-settings-status'))
-        .toHaveText('Prompt testing is ready.');
+    await expect(page.locator('#sbpl-settings .sbpl-settings-status')).toBeHidden();
     await page.locator('#sbpl-menu-item').click();
     await expect(page.locator('#sbpl-workbench .sbpl-availability')).toBeHidden();
 });
@@ -82,6 +91,7 @@ test('an incompatible host is reported in the drawer and the workbench', async (
     }));
     const status = page.locator('#sbpl-settings .sbpl-settings-status');
     await expect(status).toHaveClass(/sbpl-settings-error/);
+    await expect(status).toContainText('Prompting Lab cannot run with this SillyBunny version.');
     await expect(status).toHaveAttribute('title', /Missing tools: ChatCompletion\./);
     const banner = page.locator('#sbpl-workbench .sbpl-availability');
     await expect(banner).toBeVisible();
@@ -97,8 +107,7 @@ test('host warnings are surfaced without blocking use', async ({ page }) => {
     const banner = page.locator('#sbpl-workbench .sbpl-availability');
     await expect(banner).toBeVisible();
     await expect(banner).toHaveClass(/sbpl-availability-warning/);
-    await expect(page.locator('#sbpl-settings .sbpl-settings-status'))
-        .toHaveText('Prompt testing is ready.');
+    await expect(page.locator('#sbpl-settings .sbpl-settings-status')).toBeHidden();
 });
 
 test('deactivate removes everything the extension added', async ({ page }) => {

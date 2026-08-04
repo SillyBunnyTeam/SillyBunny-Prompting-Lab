@@ -55,17 +55,20 @@ export function mountRuntimeUi({ signal = null } = {}) {
         }
         const state = workbench.getState();
         if (state.availability?.ok === true) {
-            drawerStatus.textContent = 'Prompt testing is ready.';
+            drawerStatus.hidden = true;
+            drawerStatus.textContent = '';
             drawerStatus.className = 'sbpl-settings-status sbpl-settings-ready';
             drawerStatus.removeAttribute('title');
         } else if (state.availability?.ok === false) {
-            drawerStatus.textContent = 'Prompt testing is unavailable. Update SillyBunny or Prompting Lab, then reload.';
+            drawerStatus.hidden = false;
+            drawerStatus.textContent = 'Prompting Lab cannot run with this SillyBunny version. Update SillyBunny or Prompting Lab, then reload.';
             drawerStatus.className = 'sbpl-settings-status sbpl-settings-error';
             if (state.availability.reason) {
                 drawerStatus.title = `Technical details: ${state.availability.reason}`;
             }
         } else {
-            drawerStatus.textContent = 'Checking compatibility with SillyBunny...';
+            drawerStatus.hidden = false;
+            drawerStatus.textContent = 'Checking SillyBunny compatibility...';
             drawerStatus.className = 'sbpl-settings-status';
             drawerStatus.removeAttribute('title');
         }
@@ -181,7 +184,6 @@ export function mountRuntimeUi({ signal = null } = {}) {
             className: 'inline-drawer sbpl-settings',
             attributes: {
                 'data-extension-name': EXTENSION_NAME,
-                'data-sb-drawer-persistence': 'off',
             },
         });
         drawerToggle = element('button', {
@@ -218,23 +220,16 @@ export function mountRuntimeUi({ signal = null } = {}) {
             className: 'sbpl-settings-status',
             attributes: { role: 'status', 'aria-live': 'polite' },
         });
-        const openButton = element('button', {
-            className: 'menu_button sbpl-button sbpl-button-primary sbpl-settings-open',
-            text: 'Open Prompting Lab',
-            attributes: { type: 'button' },
-        });
-        openButton.addEventListener('click', revealWorkbench);
 
         settingsBody.append(
             drawerStatus,
-            openButton,
             element('p', {
                 className: 'sbpl-settings-note',
-                text: 'Running tests does not send a message or spend tokens, unless you ask for side-by-side model responses.',
+                text: 'Prompt tests build prompts without sending a message or using tokens. Compare models is the only tab that sends a prompt and uses tokens.',
             }),
             element('p', {
                 className: 'sbpl-settings-note',
-                text: 'A test run briefly switches your character, persona, preset, and connection profile, then puts them back when it finishes.',
+                text: 'While a suite runs, Prompting Lab temporarily applies each test case\'s character, persona, preset, and connection profile, then restores your setup.',
             }),
         );
 
@@ -243,12 +238,10 @@ export function mountRuntimeUi({ signal = null } = {}) {
         settingsDrawer.append(drawerToggle, drawerContent);
         settingsRoot.append(settingsDrawer);
         host.append(settingsRoot);
+        workbench.mount(workbenchMount);
 
         drawerObserver = new MutationObserver(syncDrawerAccessibility);
         drawerObserver.observe(drawerIcon, { attributes: true, attributeFilter: ['class'] });
-        if (workbench.getState().open) {
-            workbench.mount(workbenchMount);
-        }
         syncDrawerAccessibility();
         updateDrawer();
     }

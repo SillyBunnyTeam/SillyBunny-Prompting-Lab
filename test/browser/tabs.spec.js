@@ -20,15 +20,27 @@ async function openTab(page, tab) {
 test('the test cases tab starts with an explanation, not an empty box', async ({ page }) => {
     const panel = await openTab(page, 'cases');
     await expect(panel).toContainText('No test suites yet');
-    await expect(panel.locator('button', { hasText: 'New suite' })).toBeVisible();
+    await expect(panel.locator('button', { hasText: 'Create suite' })).toBeVisible();
+});
+
+test('action buttons stay horizontal and use the host primary style', async ({ page }) => {
+    const panel = await openTab(page, 'cases');
+    const createSuite = panel.getByRole('button', { name: 'Create suite' });
+    const addCase = panel.getByRole('button', { name: 'Add test case' });
+    await expect(addCase).toHaveClass(/menu_button_primary/);
+    for (const action of [createSuite, addCase]) {
+        await expect(action).toHaveCSS('white-space', 'nowrap');
+        const box = await action.boundingBox();
+        expect(box.width).toBeGreaterThan(box.height);
+    }
 });
 
 test('a suite and a test case can be created and saved', async ({ page }) => {
     const panel = await openTab(page, 'cases');
-    await panel.locator('button', { hasText: 'New suite' }).click();
+    await panel.getByRole('button', { name: 'Create suite' }).click();
     await expect(panel).toContainText('Created "Suite 1"');
 
-    await panel.locator('button', { hasText: 'New test case' }).click();
+    await panel.getByRole('button', { name: 'Add test case' }).click();
     const editor = panel.locator('.sbpl-editor');
     await expect(editor).toBeVisible();
 
@@ -42,16 +54,16 @@ test('a suite and a test case can be created and saved', async ({ page }) => {
 
 test('a test case without a character explains what is missing', async ({ page }) => {
     const panel = await openTab(page, 'cases');
-    await panel.locator('button', { hasText: 'New suite' }).click();
-    await panel.locator('button', { hasText: 'New test case' }).click();
+    await panel.getByRole('button', { name: 'Create suite' }).click();
+    await panel.getByRole('button', { name: 'Add test case' }).click();
     await panel.locator('button', { hasText: 'Save test case' }).click();
     await expect(panel.locator('.sbpl-problems')).toContainText('Choose a character');
 });
 
 test('checks can be added to a test case and read back', async ({ page }) => {
     const panel = await openTab(page, 'cases');
-    await panel.locator('button', { hasText: 'New suite' }).click();
-    await panel.locator('button', { hasText: 'New test case' }).click();
+    await panel.getByRole('button', { name: 'Create suite' }).click();
+    await panel.getByRole('button', { name: 'Add test case' }).click();
     const adder = panel.locator('.sbpl-assertion-adder');
     await adder.locator('select').selectOption('token-ceiling');
     await adder.locator('input').fill('1500');
@@ -61,8 +73,8 @@ test('checks can be added to a test case and read back', async ({ page }) => {
 
 test('the personas and profiles offered come from the host', async ({ page }) => {
     const panel = await openTab(page, 'cases');
-    await panel.locator('button', { hasText: 'New suite' }).click();
-    await panel.locator('button', { hasText: 'New test case' }).click();
+    await panel.getByRole('button', { name: 'Create suite' }).click();
+    await panel.getByRole('button', { name: 'Add test case' }).click();
     const selects = panel.locator('.sbpl-editor select');
     await expect(selects.nth(1)).toContainText('Me');
     await expect(selects.nth(2)).toContainText('Claude');
@@ -72,8 +84,8 @@ test('the personas and profiles offered come from the host', async ({ page }) =>
 
 test('a Prompt Tags profile can be pinned from the case editor', async ({ page }) => {
     const panel = await openTab(page, 'cases');
-    await panel.locator('button', { hasText: 'New suite' }).click();
-    await panel.locator('button', { hasText: 'New test case' }).click();
+    await panel.getByRole('button', { name: 'Create suite' }).click();
+    await panel.getByRole('button', { name: 'Add test case' }).click();
     const selects = panel.locator('.sbpl-editor select');
     await selects.nth(0).selectOption('tester.png');
     await selects.nth(3).selectOption('Tagged');
@@ -102,7 +114,7 @@ test('the comparison tab asks for two runs before it can compare', async ({ page
     await expect(panel).toContainText('Nothing to compare yet');
 });
 
-test('the side-by-side tab warns that it spends tokens', async ({ page }) => {
+test('the model comparison tab warns that it spends tokens', async ({ page }) => {
     const panel = await openTab(page, 'ab');
     await expect(panel).toContainText('uses tokens');
     await expect(panel).toContainText('does not change');
@@ -110,7 +122,7 @@ test('the side-by-side tab warns that it spends tokens', async ({ page }) => {
 
 test('the settings tab exposes retention, caching depth and transfer', async ({ page }) => {
     const panel = await openTab(page, 'settings');
-    await expect(panel).toContainText('Results kept for each test case');
+    await expect(panel).toContainText('Runs kept for each test case');
     await expect(panel).toContainText('Prompt caching depth');
     await expect(panel.locator('button', { hasText: 'Export suite' })).toBeVisible();
     await expect(panel).toContainText('saved inside the character card');

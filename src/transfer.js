@@ -52,7 +52,7 @@ export function buildExport(suite, cases, baselineRuns = null) {
         throw new Error(
             `This export is ${formatSize(size)}, which is larger than the ${formatSize(limit)} limit. `
             + (includeBaselines
-                ? 'Export without saved results, or split the suite into smaller ones.'
+                ? 'Export without baseline runs, or split the suite into smaller ones.'
                 : 'Split the suite into smaller ones.'),
         );
     }

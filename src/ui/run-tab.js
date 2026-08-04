@@ -232,7 +232,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
         const wrapper = element('div', { className: 'sbpl-caveats' });
         wrapper.append(element('p', {
             className: 'sbpl-caveats-title',
-            text: 'What these results cannot show',
+            text: 'What these runs cannot show',
         }));
         const list = element('ul', { className: 'sbpl-caveat-list' });
         for (const code of codes) {
@@ -368,20 +368,20 @@ export function createRunTab({ onRunFinished = null } = {}) {
             await showPreflight();
         });
 
-        runButton = button('Run these tests', () => { void start(); }, {
-            className: 'menu_button sbpl-button sbpl-button-primary',
+        runButton = button('Run suite', () => { void start(); }, {
+            className: 'menu_button menu_button_primary sbpl-button',
         });
         cancelButton = button('Stop', () => {
             controller?.abort();
             statusLine.textContent = 'Stopping after the current test case...';
         }, { className: 'menu_button sbpl-button' });
         cancelButton.hidden = true;
-        baselineButton = button('Set these results as the baseline', async () => {
+        baselineButton = button('Set passing runs as baselines', async () => {
             if (!activeSuite || !lastResult) {
                 return;
             }
             await lab.promoteAllPassing(activeSuite, lastResult.runs);
-            statusLine.textContent = 'Saved as the baseline. Future runs will be compared against these results.';
+            statusLine.textContent = 'Saved passing runs as baselines. Future runs will be compared against them.';
             await refreshSuites();
         }, { className: 'menu_button sbpl-button' });
         baselineButton.hidden = true;
@@ -410,7 +410,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
             if (!suites.length && !activeSuite) {
                 const empty = emptyState(
                     'No test suites yet.',
-                    'Create a test case on the Test cases tab, then come back here to run it.',
+                    'Create a suite and add a test case on the Tests tab, then come back here.',
                 );
                 replace(resultsHost, empty);
             }
