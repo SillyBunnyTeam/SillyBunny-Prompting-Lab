@@ -141,6 +141,75 @@ export const TAB_LABEL = Object.freeze({
     [TAB.SETTINGS]: 'Settings',
 });
 
+/**
+ * What each tab is for, in the words the workspace shows around it: an icon
+ * and a short line for the side rail, a sentence for the panel heading, and
+ * whether opening this tab can end up spending tokens.
+ */
+export const TAB_META = Object.freeze({
+    [TAB.CASES]: Object.freeze({
+        icon: 'fa-vials',
+        hint: 'Suites, test cases and their checks',
+        blurb: 'A test case is one character and its prompt settings. A suite is a group of test cases that run together.',
+        sends: false,
+    }),
+    [TAB.PRESETS]: Object.freeze({
+        icon: 'fa-sliders',
+        hint: 'Copy, edit and publish presets',
+        blurb: 'Work on a copy of a preset without touching the one you rely on, then publish the copy as a new preset.',
+        sends: false,
+    }),
+    [TAB.PROMPTS]: Object.freeze({
+        icon: 'fa-align-left',
+        hint: 'Single prompts and their versions',
+        blurb: 'Prompts on their own, outside any preset, with as many draft versions of each as you like.',
+        sends: false,
+    }),
+    [TAB.RUN]: Object.freeze({
+        icon: 'fa-play',
+        hint: 'Build every prompt in a suite',
+        blurb: 'Rebuilds each prompt the way SillyBunny would before sending it, then checks it and compares it against your baseline.',
+        sends: false,
+    }),
+    [TAB.DIFF]: Object.freeze({
+        icon: 'fa-code-compare',
+        hint: 'What changed between two runs',
+        blurb: 'Shows what changed between two runs of the same test case, section by section, with the token cost of each change.',
+        sends: false,
+    }),
+    [TAB.EXPERIMENT]: Object.freeze({
+        icon: 'fa-flask',
+        hint: 'Two wordings, one connection',
+        blurb: 'Sends a prompt and a modified version of it through the same connection, with the same card and message, and puts the replies side by side.',
+        sends: true,
+    }),
+    [TAB.AB]: Object.freeze({
+        icon: 'fa-scale-balanced',
+        hint: 'One prompt, two connections',
+        blurb: 'Sends a saved prompt to two connections and shows both replies next to each other. Nothing is added to any chat.',
+        sends: true,
+    }),
+    [TAB.SETTINGS]: Object.freeze({
+        icon: 'fa-gear',
+        hint: 'History, caching depth, transfer',
+        blurb: 'How much run history to keep, the caching depth the cache checks need, and moving suites between installations.',
+        sends: false,
+    }),
+});
+
+/**
+ * The order tabs appear in, and the headings the side rail groups them under.
+ * Flattened, this is the tab order everywhere else in the lab.
+ */
+export const TAB_GROUPS = Object.freeze([
+    Object.freeze({ id: 'build', label: 'Build', tabs: Object.freeze([TAB.CASES, TAB.PRESETS, TAB.PROMPTS]) }),
+    Object.freeze({ id: 'run', label: 'Run', tabs: Object.freeze([TAB.RUN]) }),
+    Object.freeze({ id: 'compare', label: 'Compare', tabs: Object.freeze([TAB.DIFF, TAB.EXPERIMENT, TAB.AB]) }),
+    Object.freeze({ id: 'setup', label: 'Set up', tabs: Object.freeze([TAB.SETTINGS]) }),
+]);
+
+export const TAB_ORDER = Object.freeze(TAB_GROUPS.flatMap(group => [...group.tabs]));
+
 export const DEFAULT_SETTINGS = Object.freeze({
     schemaVersion: SETTINGS_VERSION,
     lastTab: TAB.CASES,

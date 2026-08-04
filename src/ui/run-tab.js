@@ -58,6 +58,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
     let statusLine = null;
     let progressBar = null;
     let progressLabel = null;
+    let queueHost = null;
     let resultsHost = null;
     let runButton = null;
     let cancelButton = null;
@@ -190,11 +191,68 @@ export function createRunTab({ onRunFinished = null } = {}) {
         };
     }
 
+    /**
+     * What pressing Run would do, listed before it is pressed: every case in
+     * the suite, what it pins, how many checks it carries, and whether it has
+     * a baseline to be compared against.
+     */
+    function renderQueue(report) {
+        if (!queueHost) {
+            return;
+        }
+        replace(queueHost);
+        if (!activeSuite || running || lastResult || !report?.cases?.length) {
+            return;
+        }
+        const blockedById = new Map((report.blocked ?? []).map(entry => [entry.caseId, entry.reason]));
+        let names = new Map();
+        try {
+            names = new Map(lab.readAvailableOptions().characters.map(item => [item.avatar, item.name]));
+        } catch {
+            names = new Map();
+        }
+
+        const ready = report.runnable?.length ?? 0;
+        queueHost.append(element('p', {
+            className: 'sbpl-summary',
+            text: blockedById.size
+                ? `Ready to run: ${ready} of ${report.cases.length} test cases.`
+                : `Ready to run: ${ready} test case${ready === 1 ? '' : 's'}.`,
+        }));
+
+        const scroller = element('div', { className: 'sbpl-scroll-x' });
+        const table = element('table', { className: 'sbpl-table' });
+        const head = element('thead');
+        const headRow = element('tr');
+        for (const label of ['Test case', 'Character', 'Checks', 'Baseline', 'State']) {
+            headRow.append(element('th', { text: label, attributes: { scope: 'col' } }));
+        }
+        head.append(headRow);
+        const body = element('tbody');
+        for (const testCase of report.cases) {
+            const avatar = testCase.pins?.characterAvatar ?? '';
+            const blockedReason = blockedById.get(testCase.id);
+            const row = element('tr');
+            row.append(
+                element('td', { text: testCase.name || 'Untitled test case' }),
+                element('td', { text: names.get(avatar) || avatar || 'No character' }),
+                element('td', { className: 'sbpl-number', text: String(testCase.assertions?.length ?? 0) }),
+                element('td', { text: activeSuite.baselines?.[testCase.id] ? 'Set' : 'None yet' }),
+                element('td', { text: blockedReason ?? 'Ready' }),
+            );
+            body.append(row);
+        }
+        table.append(head, body);
+        scroller.append(table);
+        queueHost.append(scroller);
+    }
+
     async function showPreflight() {
         if (!warningsHost) {
             return;
         }
         replace(warningsHost);
+        replace(queueHost);
         if (!activeSuite) {
             return;
         }
@@ -205,6 +263,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
             warningsHost.append(warning(`This suite could not be checked: ${errorMessage(error)}`));
             return;
         }
+        renderQueue(report);
 
         for (const blocked of report.blocked) {
             warningsHost.append(warning(`One test case cannot run: ${blocked.reason}`));
@@ -317,6 +376,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
         controller = new AbortController();
         lastResult = null;
         updateControls();
+        replace(queueHost);
         replace(resultsHost);
         progressBar.hidden = false;
         progressBar.value = 0;
@@ -402,9 +462,10 @@ export function createRunTab({ onRunFinished = null } = {}) {
         progressLabel = element('p', { className: 'sbpl-progress-label' });
         progressBar = element('progress', { className: 'sbpl-progress' });
         progressBar.hidden = true;
+        queueHost = element('div', { className: 'sbpl-queue' });
         resultsHost = element('div', { className: 'sbpl-results' });
 
-        root.append(controls, warningsHost, progressLabel, progressBar, statusLine, resultsHost);
+        root.append(controls, warningsHost, progressLabel, progressBar, statusLine, queueHost, resultsHost);
         return root;
     }
 

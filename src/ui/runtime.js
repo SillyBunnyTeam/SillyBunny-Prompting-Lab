@@ -1,5 +1,5 @@
 import { EXTENSION_LABEL, EXTENSION_NAME, TAB } from '../constants.js';
-import { button, element } from '../dom.js';
+import { button, element, replace } from '../dom.js';
 import { createAbTab } from './ab-tab.js';
 import { createCasesTab } from './cases-tab.js';
 import { createDiffTab } from './diff-tab.js';
@@ -34,11 +34,58 @@ export function mountRuntimeUi({ signal = null } = {}) {
     let workbenchMount = null;
     let page = null;
     let pageMount = null;
+    let pageStatus = null;
     let pageOpener = null;
     let disposed = false;
     let workbench = null;
 
+    /** A small labelled pill for the workspace header. */
+    function pill(text, { variant = '', title = '' } = {}) {
+        const node = element('span', {
+            className: variant ? `sbpl-pill ${variant}` : 'sbpl-pill',
+            ...(title ? { attributes: { title } } : {}),
+        });
+        node.append(
+            element('span', { className: 'sbpl-pill-dot', attributes: { 'aria-hidden': 'true' } }),
+            element('span', { text }),
+        );
+        return node;
+    }
+
+    /** The workspace header says whether the lab can run before you try. */
+    function updatePageStatus() {
+        if (!pageStatus?.isConnected) {
+            return;
+        }
+        const availability = workbench.getState().availability;
+        let host;
+        if (availability?.ok === true && !availability.warnings?.length) {
+            host = pill('Host ready', { variant: 'sbpl-pill-ready' });
+        } else if (availability?.ok === true) {
+            host = pill('Host ready, with notes', {
+                variant: 'sbpl-pill-warning',
+                title: availability.warnings.join(' '),
+            });
+        } else if (availability?.ok === false) {
+            host = pill('Host not compatible', {
+                variant: 'sbpl-pill-error',
+                title: availability.reason ?? '',
+            });
+        } else {
+            host = pill('Checking host...', { variant: 'sbpl-pill-quiet' });
+        }
+        replace(
+            pageStatus,
+            host,
+            pill('Tests spend no tokens', {
+                variant: 'sbpl-pill-quiet',
+                title: 'Only Compare prompts and Compare models send a request, and only when you press their button.',
+            }),
+        );
+    }
+
     function updateDrawer() {
+        updatePageStatus();
         if (!settingsDrawer?.isConnected || !drawerStatus) {
             return;
         }
@@ -76,7 +123,10 @@ export function mountRuntimeUi({ signal = null } = {}) {
         },
     });
     const casesTab = createCasesTab({
-        onChanged: () => runTab.refresh(),
+        onChanged: () => {
+            runTab.refresh();
+            workbench.refreshReadout();
+        },
         onQuickRun: (testCase) => {
             workbench.showTab(TAB.RUN);
             runTab.runOne(testCase);
@@ -86,12 +136,14 @@ export function mountRuntimeUi({ signal = null } = {}) {
         onChanged: () => {
             presetsTab.refresh();
             experimentTab.refresh();
+            workbench.refreshReadout();
         },
     });
     const presetsTab = createPresetsTab({
         onChanged: () => {
             casesTab.refresh();
             promptsTab.refresh();
+            workbench.refreshReadout();
         },
         onPromptSaved: () => {
             promptsTab.refresh();
@@ -144,18 +196,36 @@ export function mountRuntimeUi({ signal = null } = {}) {
 
         const header = element('header', { className: 'sbpl-page-header' });
         const heading = element('div', { className: 'sbpl-page-heading' });
-        heading.append(
+        const copy = element('div', { className: 'sbpl-page-copy' });
+        copy.append(
             element('h2', { className: 'sbpl-page-title', text: EXTENSION_LABEL }),
             element('p', {
                 className: 'sbpl-page-subtitle',
-                text: 'Prompt tests build prompts without sending a message or using tokens. Compare prompts and Compare models are the tabs that send requests.',
+                text: 'Build a prompt the way SillyBunny would, check it, and see what a change did to it.',
             }),
         );
-        const close = button('Close workspace', () => closePage(), {
-            className: 'menu_button sbpl-button sbpl-page-close',
-            title: 'Close the workspace and return to SillyBunny (Escape)',
-        });
-        header.append(heading, close);
+        heading.append(
+            element('span', {
+                className: 'sbpl-page-mark fa-solid fa-flask',
+                attributes: { 'aria-hidden': 'true' },
+            }),
+            copy,
+        );
+
+        pageStatus = element('div', { className: 'sbpl-page-status' });
+        const actions = element('div', { className: 'sbpl-page-actions' });
+        actions.append(
+            element('span', {
+                className: 'sbpl-page-shortcut',
+                text: 'Esc',
+                attributes: { 'aria-hidden': 'true', title: 'Escape closes the workspace' },
+            }),
+            button('Close workspace', () => closePage(), {
+                className: 'menu_button sbpl-button sbpl-page-close',
+                title: 'Close the workspace and return to SillyBunny (Escape)',
+            }),
+        );
+        header.append(heading, pageStatus, actions);
 
         const body = element('div', { className: 'sbpl-page-body' });
         pageMount = element('div', { className: 'sbpl-workbench-mount' });
@@ -198,7 +268,8 @@ export function mountRuntimeUi({ signal = null } = {}) {
         ensurePage();
         pageOpener = opener instanceof HTMLElement ? opener : null;
         page.hidden = false;
-        workbench.mount(pageMount);
+        workbench.mount(pageMount, { layout: 'page' });
+        updatePageStatus();
         requestAnimationFrame(() => {
             if (!disposed && page && !page.hidden) {
                 workbench.focus();
@@ -214,7 +285,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
         page.hidden = true;
         ensureSettingsDrawer();
         if (workbenchMount) {
-            workbench.mount(workbenchMount);
+            workbench.mount(workbenchMount, { layout: 'drawer' });
         }
         pageOpener?.focus?.();
         pageOpener = null;
@@ -330,7 +401,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
         settingsRoot.append(settingsDrawer);
         host.append(settingsRoot);
         if (!page || page.hidden) {
-            workbench.mount(workbenchMount);
+            workbench.mount(workbenchMount, { layout: 'drawer' });
         }
 
         drawerObserver = new MutationObserver(syncDrawerAccessibility);
@@ -388,6 +459,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
             workbenchMount = null;
             page = null;
             pageMount = null;
+            pageStatus = null;
             pageOpener = null;
         },
     };

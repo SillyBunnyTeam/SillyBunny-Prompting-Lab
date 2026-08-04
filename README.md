@@ -60,6 +60,20 @@ Each run also lists what a test cannot reproduce. A test build skips extensions 
 history at the last moment, such as vector storage and summaries, so a real reply may contain
 content a test does not show. These notes appear on the run itself rather than in the manual.
 
+## The workspace
+
+Opened as a full page, the lab lays itself out as a workbench. The sections are
+listed down the left under **Build**, **Run**, **Compare** and **Set up**, each
+with a line saying what it is for, and the two sections that spend tokens are
+marked as such before you open them. The rest of the window is one work
+surface, with a heading that repeats what the section does and what it costs to
+use. At the foot of the list is a count of what this workspace holds: suites,
+test cases, checks, saved runs, preset drafts and prompts.
+
+On a wide screen the lists and the editor sit next to each other, so opening a
+test case or a preset does not push the list you picked it from off the screen.
+The same lab in the Extensions drawer keeps its compact row of tabs instead.
+
 ## The eight tabs
 
 ### Tests
@@ -125,7 +139,8 @@ you keep here are the variants you can test.
 
 Runs a whole suite, one test case at a time. Before it starts it tells you what will happen: which
 cases cannot run, which characters have no chat yet, and whether you have unsaved preset changes
-that running would discard.
+that running would discard. It also lists the suite itself, case by case, with the character each
+one uses, how many checks it carries, and whether it has a baseline to be compared against yet.
 
 While a suite runs, your character, persona, preset, and connection profile are changed to match
 each test case. They are put back when the run finishes, when you stop it, and when something goes

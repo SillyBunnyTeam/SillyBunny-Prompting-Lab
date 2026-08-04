@@ -260,6 +260,22 @@ test('the run tab explains itself before any suite exists', async ({ page }) => 
     await expect(panel).toContainText('No test suites yet');
 });
 
+test('the run tab lists what a run would do before it is started', async ({ page }) => {
+    const cases = await openTab(page, 'cases');
+    await cases.getByRole('button', { name: 'Create suite' }).click();
+    await cases.getByRole('button', { name: 'Add test case' }).click();
+    await cases.locator('.sbpl-editor select').first().selectOption('tester.png');
+    await cases.locator('button', { hasText: 'Save test case' }).click();
+    await expect(cases.locator('.sbpl-case-item')).toHaveCount(1);
+
+    const panel = await switchTab(page, 'run');
+    const queue = panel.locator('.sbpl-queue');
+    await expect(queue).toContainText('Ready to run: 1 test case.');
+    await expect(queue.locator('tbody tr')).toHaveCount(1);
+    await expect(queue).toContainText('Tester');
+    await expect(queue).toContainText('None yet');
+});
+
 test('a run result row shows unchecked checks explicitly', async ({ page }) => {
     await page.goto('/test/browser/fixture.html');
     await page.waitForFunction(() => globalThis.__ready === true);

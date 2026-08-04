@@ -61,6 +61,8 @@
 /* ---- full-page workspace ---- */
 
 .sbpl-page {
+    --sbpl-line: var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4));
+    --sbpl-rail: 15.5em;
     position: fixed;
     inset: 0;
     z-index: 4000;
@@ -77,17 +79,37 @@
 .sbpl-page-header {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5em 1em;
+    gap: 0.5em 1.25em;
     align-items: center;
     justify-content: space-between;
-    padding: 0.75em 1em;
-    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4));
+    padding: 0.6em 1.1em;
+    border-bottom: 1px solid var(--sbpl-line);
+    background-color: var(--black30a, rgba(0, 0, 0, 0.2));
 }
 
 .sbpl-page-heading {
     display: flex;
+    align-items: center;
+    gap: 0.7em;
+    min-width: 0;
+}
+
+.sbpl-page-mark {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 2.3em;
+    height: 2.3em;
+    border: 1px solid var(--sbpl-line);
+    border-radius: 0.6em;
+    background-color: var(--black50a, rgba(0, 0, 0, 0.3));
+    opacity: 0.85;
+}
+
+.sbpl-page-copy {
+    display: flex;
     flex-direction: column;
-    gap: 0.15em;
+    gap: 0.1em;
     min-width: 0;
 }
 
@@ -102,24 +124,66 @@
     opacity: 0.75;
 }
 
+.sbpl-page-status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+    align-items: center;
+    min-width: 0;
+}
+
+.sbpl-page-actions {
+    display: flex;
+    gap: 0.5em;
+    align-items: center;
+    /* Stays on the right even when the header wraps to a second line. */
+    margin-left: auto;
+}
+
+.sbpl-page-shortcut {
+    padding: 0.1em 0.45em;
+    border: 1px solid var(--sbpl-line);
+    border-radius: 0.3em;
+    font-family: var(--monoFontFamily, monospace);
+    font-size: calc(var(--mainFontSize, 1rem) * 0.75);
+    opacity: 0.6;
+}
+
+.sbpl-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+    padding: 0.15em 0.7em;
+    border: 1px solid currentColor;
+    border-radius: 1em;
+    font-size: calc(var(--mainFontSize, 1rem) * 0.8);
+    white-space: nowrap;
+}
+
+.sbpl-pill-dot {
+    width: 0.45em;
+    height: 0.45em;
+    border-radius: 50%;
+    background-color: currentColor;
+}
+
+.sbpl-pill-ready { color: var(--active, #5cb85c); }
+.sbpl-pill-warning { color: var(--warning, #f0ad4e); }
+.sbpl-pill-error { color: var(--fullred, #d9534f); }
+.sbpl-pill-quiet { opacity: 0.6; }
+
 .sbpl-page-body {
+    display: flex;
     flex: 1;
     min-height: 0;
-    overflow-y: auto;
     overscroll-behavior: contain;
-    padding: 0.75em 1em 2em;
 }
 
 .sbpl-page-body > .sbpl-workbench-mount {
-    max-width: 70em;
-    margin: 0 auto;
-}
-
-/* Inside the page there is no drawer above the workbench to separate from. */
-.sbpl-page-body .sbpl-workbench {
-    margin-top: 0;
-    padding-top: 0;
-    border-top: none;
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
 }
 
 /* ---- workbench shell ---- */
@@ -131,6 +195,60 @@
     margin-top: 0.75em;
     padding-top: 0.75em;
     border-top: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4));
+}
+
+/*
+ * In the page the same markup becomes a workbench: a rail of sections on the
+ * left that stays put, and one scrolling work surface on the right.
+ */
+.sbpl-workbench-page {
+    display: grid;
+    grid-template-columns: var(--sbpl-rail) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    flex: 1;
+    gap: 0;
+    min-width: 0;
+    min-height: 0;
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+}
+
+.sbpl-workbench-page > .sbpl-availability {
+    grid-column: 1 / -1;
+    margin: 0.6em 1.1em 0;
+}
+
+.sbpl-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75em;
+    min-width: 0;
+}
+
+.sbpl-workbench-page > .sbpl-nav {
+    grid-row: 2;
+    grid-column: 1;
+    gap: 1.1em;
+    padding: 0.9em 0.7em 1.1em;
+    border-right: 1px solid var(--sbpl-line);
+    overflow-y: auto;
+}
+
+.sbpl-main {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75em;
+    min-width: 0;
+}
+
+.sbpl-workbench-page > .sbpl-main {
+    grid-row: 2;
+    grid-column: 2;
+    gap: 1em;
+    padding: 1em 1.4em 3em;
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 .sbpl-availability {
@@ -155,7 +273,19 @@
     gap: 0.25em;
 }
 
+/* The drawer keeps one flat strip, so the groups carry no box of their own. */
+.sbpl-tab-group {
+    display: contents;
+}
+
+.sbpl-tab-group-label {
+    display: none;
+}
+
 .sbpl-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45em;
     padding: 0.4em 0.8em;
     min-height: 2.4em;
     border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4));
@@ -163,7 +293,49 @@
     background: none;
     color: inherit;
     font: inherit;
+    text-align: left;
     cursor: pointer;
+}
+
+.sbpl-tab-icon {
+    flex: none;
+    width: 1.1em;
+    text-align: center;
+    opacity: 0.7;
+}
+
+.sbpl-tab-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1em;
+    min-width: 0;
+}
+
+.sbpl-tab-line {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4em;
+    min-width: 0;
+}
+
+.sbpl-tab-label {
+    overflow-wrap: anywhere;
+}
+
+.sbpl-tab-badge {
+    flex: none;
+    padding: 0 0.4em;
+    border: 1px solid currentColor;
+    border-radius: 1em;
+    color: var(--warning, #f0ad4e);
+    font-size: calc(var(--mainFontSize, 1rem) * 0.7);
+    font-weight: 400;
+}
+
+.sbpl-tab-hint {
+    display: none;
+    font-size: calc(var(--mainFontSize, 1rem) * 0.78);
+    opacity: 0.6;
 }
 
 .sbpl-tab:hover {
@@ -182,6 +354,151 @@
     outline-offset: 2px;
 }
 
+/* ---- the side rail, only in the page ---- */
+
+.sbpl-workbench-page .sbpl-tabs {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: 1.1em;
+}
+
+.sbpl-workbench-page .sbpl-tab-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15em;
+}
+
+.sbpl-workbench-page .sbpl-tab-group-label {
+    display: block;
+    margin: 0 0 0.2em;
+    padding: 0 0.55em;
+    font-family: var(--monoFontFamily, monospace);
+    font-size: calc(var(--mainFontSize, 1rem) * 0.7);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    opacity: 0.5;
+}
+
+.sbpl-workbench-page .sbpl-tab {
+    align-items: flex-start;
+    gap: 0.6em;
+    padding: 0.45em 0.55em;
+    border-color: transparent;
+    border-left: 2px solid transparent;
+    border-radius: 0.45em;
+}
+
+.sbpl-workbench-page .sbpl-tab-icon {
+    margin-top: 0.15em;
+}
+
+.sbpl-workbench-page .sbpl-tab-hint {
+    display: block;
+}
+
+.sbpl-workbench-page .sbpl-tab-active {
+    border-color: var(--sbpl-line);
+    border-left-color: var(--active, currentColor);
+}
+
+.sbpl-workbench-page .sbpl-tab-active .sbpl-tab-icon {
+    opacity: 1;
+}
+
+/* The rail's own instrument panel: what this workspace currently holds. */
+.sbpl-readout {
+    display: none;
+}
+
+.sbpl-workbench-page .sbpl-readout {
+    display: flex;
+    position: sticky;
+    bottom: 0;
+    flex: none;
+    flex-direction: column;
+    gap: 0.25em;
+    /* Pinned to the foot of the rail, so a long list of sections cannot push
+       the counts off the bottom of the screen. */
+    margin-top: auto;
+    padding: 0.65em 0.7em;
+    border: 1px solid var(--sbpl-line);
+    border-radius: 0.5em;
+    background-color: var(--SmartThemeBlurTintColor, #1b1f20);
+}
+
+.sbpl-readout-title {
+    margin: 0 0 0.25em;
+    font-family: var(--monoFontFamily, monospace);
+    font-size: calc(var(--mainFontSize, 1rem) * 0.7);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    opacity: 0.5;
+}
+
+.sbpl-readout-row {
+    display: flex;
+    gap: 0.75em;
+    align-items: baseline;
+    justify-content: space-between;
+    font-size: calc(var(--mainFontSize, 1rem) * 0.82);
+}
+
+.sbpl-readout-label {
+    opacity: 0.7;
+}
+
+.sbpl-readout-value {
+    font-family: var(--monoFontFamily, monospace);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---- panel heading, only in the page ---- */
+
+.sbpl-panel-head {
+    display: none;
+}
+
+.sbpl-workbench-page .sbpl-panel-head {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15em;
+    padding-bottom: 0.8em;
+    border-bottom: 1px solid var(--sbpl-line);
+}
+
+.sbpl-panel-eyebrow {
+    margin: 0;
+    font-family: var(--monoFontFamily, monospace);
+    font-size: calc(var(--mainFontSize, 1rem) * 0.7);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    opacity: 0.5;
+}
+
+.sbpl-panel-title {
+    margin: 0;
+    font-size: calc(var(--mainFontSize, 1rem) * 1.15);
+}
+
+.sbpl-panel-blurb {
+    margin: 0;
+    max-width: 80ch;
+    font-size: calc(var(--mainFontSize, 1rem) * 0.88);
+    opacity: 0.75;
+}
+
+.sbpl-panel-cost {
+    margin: 0.15em 0 0;
+    max-width: 80ch;
+    font-size: calc(var(--mainFontSize, 1rem) * 0.8);
+    opacity: 0.6;
+}
+
+.sbpl-panel-cost-sends {
+    color: var(--warning, #f0ad4e);
+    opacity: 0.85;
+}
+
 .sbpl-tab-select {
     display: none;
     width: 100%;
@@ -194,8 +511,38 @@
     min-width: 0;
 }
 
+.sbpl-workbench-page .sbpl-panel {
+    flex: 1;
+}
+
 .sbpl-panel:focus {
     outline: none;
+}
+
+/* Long explanations stay readable however wide the workspace is. */
+.sbpl-workbench-page .sbpl-settings-note,
+.sbpl-workbench-page .sbpl-field-hint,
+.sbpl-workbench-page .sbpl-caveat-list,
+.sbpl-workbench-page .sbpl-warning,
+.sbpl-workbench-page .sbpl-caveats {
+    max-width: 80ch;
+}
+
+/*
+ * A single control gains nothing from being as wide as the window. Prompt
+ * fields are the exception: their text is the thing being worked on.
+ */
+.sbpl-workbench-page .sbpl-field:not(.sbpl-prompt-field) {
+    max-width: 46em;
+}
+
+.sbpl-workbench-page .sbpl-settings-tab {
+    max-width: 60em;
+}
+
+/* Short columns spread out oddly across a very wide window. */
+.sbpl-workbench-page .sbpl-queue {
+    max-width: 64em;
 }
 
 /* ---- shared controls ---- */
@@ -247,6 +594,96 @@
     max-width: 100%;
 }
 
+/* ---- how the workspace answers the space it is given ---- */
+
+/*
+ * Wide enough for two columns: the library on the left stays visible while the
+ * editor works on the right, instead of pushing it below the fold.
+ */
+@media (min-width: 1100px) {
+    .sbpl-workbench-page .sbpl-cases-tab,
+    .sbpl-workbench-page .sbpl-presets-tab,
+    .sbpl-workbench-page .sbpl-prompts-tab {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+        align-content: start;
+        align-items: start;
+        gap: 0.7em 1.5em;
+    }
+
+    .sbpl-workbench-page .sbpl-cases-tab > *,
+    .sbpl-workbench-page .sbpl-presets-tab > *,
+    .sbpl-workbench-page .sbpl-prompts-tab > * {
+        grid-column: 1 / -1;
+        min-width: 0;
+    }
+
+    .sbpl-workbench-page .sbpl-cases-tab > .sbpl-case-list-host,
+    .sbpl-workbench-page .sbpl-presets-tab > .sbpl-preset-library,
+    .sbpl-workbench-page .sbpl-prompts-tab > .sbpl-preset-library {
+        grid-column: 1;
+    }
+
+    .sbpl-workbench-page .sbpl-cases-tab > .sbpl-editor-host,
+    .sbpl-workbench-page .sbpl-presets-tab > .sbpl-editor-host,
+    .sbpl-workbench-page .sbpl-prompts-tab > .sbpl-editor-host {
+        grid-column: 2;
+    }
+
+    /* With nothing being edited, the library has the whole surface. */
+    .sbpl-workbench-page .sbpl-cases-tab:has(> .sbpl-editor-host:empty) > .sbpl-case-list-host,
+    .sbpl-workbench-page .sbpl-presets-tab:has(> .sbpl-editor-host:empty) > .sbpl-preset-library,
+    .sbpl-workbench-page .sbpl-prompts-tab:has(> .sbpl-editor-host:empty) > .sbpl-preset-library {
+        grid-column: 1 / -1;
+    }
+
+    .sbpl-workbench-page .sbpl-editor {
+        margin-top: 0;
+    }
+
+    .sbpl-workbench-page .sbpl-prompt-pair {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-areas:
+            "a b"
+            "copy copy";
+        gap: 0.5em 1.5em;
+        align-items: start;
+    }
+
+    .sbpl-workbench-page .sbpl-prompt-pair > :nth-child(1) { grid-area: a; }
+    .sbpl-workbench-page .sbpl-prompt-pair > :nth-child(2) { grid-area: copy; justify-self: start; }
+    .sbpl-workbench-page .sbpl-prompt-pair > :nth-child(3) { grid-area: b; }
+
+    .sbpl-workbench-page .sbpl-prompt-pair .sbpl-textarea {
+        min-height: 11em;
+    }
+}
+
+/* Vertical room is the thing the page has most of. */
+.sbpl-workbench-page .sbpl-diff-body {
+    max-height: 60vh;
+}
+
+.sbpl-workbench-page .sbpl-ab-body {
+    max-height: 55vh;
+}
+
+/* A narrower window keeps the rail, but only the names fit in it. */
+@media (max-width: 900px) {
+    .sbpl-page {
+        --sbpl-rail: 11.5em;
+    }
+
+    .sbpl-workbench-page .sbpl-tab-hint {
+        display: none;
+    }
+
+    .sbpl-workbench-page > .sbpl-main {
+        padding: 0.9em 1em 2.5em;
+    }
+}
+
 /* ---- mobile ---- */
 
 @media (max-width: 620px) {
@@ -256,6 +693,41 @@
 
     .sbpl-tab-select {
         display: block;
+    }
+
+    /* No room for a rail: one column, one scroller, sections from the select. */
+    .sbpl-workbench-page {
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+
+    .sbpl-workbench-page > .sbpl-availability {
+        margin: 0.6em 0.8em 0;
+    }
+
+    .sbpl-workbench-page > .sbpl-nav {
+        padding: 0.7em 0.8em 0;
+        border-right: none;
+        overflow: visible;
+    }
+
+    .sbpl-workbench-page > .sbpl-main {
+        padding: 0.8em 0.8em 2.5em;
+        overflow: visible;
+    }
+
+    .sbpl-workbench-page .sbpl-readout {
+        display: none;
+    }
+
+    .sbpl-page-header {
+        padding: 0.5em 0.8em;
+    }
+
+    .sbpl-page-shortcut {
+        display: none;
     }
 }
 
@@ -309,6 +781,24 @@
 .sbpl-progress {
     width: 100%;
     height: 0.6em;
+}
+
+.sbpl-run-tab,
+.sbpl-results {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6em;
+}
+
+/* What a run would do, shown before it is started. */
+.sbpl-queue {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+}
+
+.sbpl-queue:empty {
+    display: none;
 }
 
 .sbpl-progress-label:empty {
@@ -583,6 +1073,17 @@
 }
 
 /* ---- prompt fields ---- */
+
+.sbpl-prompt-pair {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    align-items: flex-start;
+}
+
+.sbpl-prompt-pair > .sbpl-prompt-field {
+    align-self: stretch;
+}
 
 .sbpl-prompt-head {
     display: flex;

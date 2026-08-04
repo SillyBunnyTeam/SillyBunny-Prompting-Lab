@@ -296,6 +296,11 @@ export function createExperimentTab() {
             title: 'Start the modified version from the current prompt',
         });
 
+        // The two versions are what this tab is about, so they travel together
+        // and can sit next to each other wherever there is room for them.
+        const promptPair = element('div', { className: 'sbpl-prompt-pair' });
+        promptPair.append(promptA.wrapper, copyDown, promptB.wrapper);
+
         loaderPromptSelect = element('select', {
             className: 'text_pole sbpl-select',
             attributes: { 'aria-label': 'Prompt to load' },
@@ -385,9 +390,7 @@ export function createExperimentTab() {
                 className: 'sbpl-settings-note',
                 text: 'Test a prompt against a modified version of it. Both are sent through the same connection with the same character card and test message, so any difference in the replies points at your change. Like Compare models, this uses tokens when you ask for replies.',
             }),
-            promptA.wrapper,
-            copyDown,
-            promptB.wrapper,
+            promptPair,
             loader,
             field('Speaking as', roleSelect),
             field('Character card', characterSelect, {
