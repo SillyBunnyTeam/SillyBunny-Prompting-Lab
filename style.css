@@ -497,3 +497,21 @@
         grid-template-columns: minmax(0, 1fr);
     }
 }
+
+.sbpl-file-input {
+    max-width: 100%;
+}
+
+.sbpl-embed-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    padding-top: 0.6em;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
+}
+
+.sbpl-settings-tab {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7em;
+}

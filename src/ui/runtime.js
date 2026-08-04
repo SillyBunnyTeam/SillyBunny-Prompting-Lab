@@ -4,6 +4,7 @@ import { createAbTab } from './ab-tab.js';
 import { createCasesTab } from './cases-tab.js';
 import { createDiffTab } from './diff-tab.js';
 import { createRunTab } from './run-tab.js';
+import { createSettingsTab } from './settings-tab.js';
 import { createWorkbench } from './workbench.js';
 
 let mounted = null;
@@ -90,7 +91,15 @@ export function mountRuntimeUi({ signal = null } = {}) {
     workbench.registerTab(TAB.CASES, casesTab);
     workbench.registerTab(TAB.RUN, runTab);
     workbench.registerTab(TAB.DIFF, diffTab);
+    const settingsTab = createSettingsTab({
+        onChanged: () => {
+            casesTab.refresh();
+            runTab.refresh();
+            diffTab.refresh();
+        },
+    });
     workbench.registerTab(TAB.AB, abTab);
+    workbench.registerTab(TAB.SETTINGS, settingsTab);
 
     function syncDrawerAccessibility() {
         const expanded = Boolean(drawerIcon && !drawerIcon.classList.contains('down'));
