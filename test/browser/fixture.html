@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Prompting Lab fixture</title>
+    <link rel="stylesheet" href="/style.css">
+    <style>
+        :root {
+            --SmartThemeBlurTintColor: #202628;
+            --SmartThemeBodyColor: #e4e9e7;
+            --SmartThemeBorderColor: #596462;
+            --mainFontSize: 1rem;
+        }
+        body { min-height: 100vh; margin: 0; background: #151a1b; color: #e4e9e7; font-family: sans-serif; }
+        #extensionsMenu { min-height: 44px; padding: 8px; }
+        #extensions-settings-button > .drawer-toggle { margin: 0 8px 8px; }
+        #fixture-extension-shell { width: min(760px, 100%); max-height: calc(100vh - 100px); margin-left: auto; overflow-y: auto; }
+        #extensions_settings2 { padding: 8px; }
+        .text_pole { margin: 5px 0; }
+        .menu_button { margin: 4px 0; }
+    </style>
+</head>
+<body>
+    <nav id="extensionsMenu"></nav>
+    <section id="extensions-settings-button" class="drawer">
+        <button class="drawer-toggle" type="button">Extensions</button>
+        <div id="fixture-extension-shell" class="sb-shell-panel-scroller" hidden>
+            <main id="extensions_settings2"></main>
+        </div>
+    </section>
+    <script type="module">
+        import { deactivate, init } from '/index.js';
+        import { __setHostForTests } from '/src/host.js';
+        import { __setStoreForTests, createMemoryStore } from '/src/storage.js';
+        import { mountRuntimeUi } from '/src/ui/runtime.js';
+
+        const shellPanel = document.getElementById('fixture-extension-shell');
+        const shellCalls = [];
+        let fallbackClicks = 0;
+
+        function showExtensions() {
+            shellPanel.hidden = false;
+        }
+
+        globalThis.SillyBunnyShell = {
+            openTab(side, tab) {
+                shellCalls.push([side, tab]);
+                if (side === 'right' && tab === 'extensions') {
+                    showExtensions();
+                }
+            },
+        };
+
+        document.querySelector('#extensions-settings-button > .drawer-toggle').addEventListener('click', () => {
+            fallbackClicks += 1;
+            shellPanel.hidden = !shellPanel.hidden;
+        });
+        document.addEventListener('click', (event) => {
+            const toggle = event.target.closest('.inline-drawer-toggle');
+            if (!(toggle instanceof HTMLElement)) {
+                return;
+            }
+            const drawer = toggle.closest('.inline-drawer');
+            const icon = drawer?.querySelector(':scope > .inline-drawer-header .inline-drawer-icon');
+            const content = drawer?.querySelector(':scope > .inline-drawer-content');
+            if (!(drawer instanceof HTMLElement) || !(icon instanceof HTMLElement) || !(content instanceof HTMLElement)) {
+                return;
+            }
+            const expand = icon.classList.contains('down');
+            icon.classList.toggle('down', !expand);
+            icon.classList.toggle('up', expand);
+            content.style.display = expand ? 'block' : 'none';
+            drawer.dispatchEvent(new CustomEvent('inline-drawer-toggle', { bubbles: true }));
+        });
+
+        const eventTypes = {
+            APP_READY: 'app-ready',
+            CHAT_CHANGED: 'chat-changed',
+            CHARACTER_EDITED: 'character-edited',
+            SETTINGS_UPDATED: 'settings-updated',
+        };
+        const listeners = new Map();
+        const eventSource = {
+            on(type, handler) {
+                const handlers = listeners.get(type) ?? new Set();
+                handlers.add(handler);
+                listeners.set(type, handlers);
+            },
+            makeLast(type, handler) {
+                this.on(type, handler);
+            },
+            removeListener(type, handler) {
+                listeners.get(type)?.delete(handler);
+            },
+            async emit(type, ...args) {
+                for (const handler of [...(listeners.get(type) ?? [])]) {
+                    await handler(...args);
+                }
+            },
+        };
+
+        const context = {
+            characterId: 0,
+            characters: [{ avatar: 'tester.png', name: 'Tester', data: { extensions: {} } }],
+            chat: [],
+            chatMetadata: {},
+            extensionSettings: {},
+            eventSource,
+            eventTypes,
+            mainApi: 'openai',
+            powerUserSettings: { personas: {} },
+            getTokenCountAsync: async text => Math.ceil(String(text).length / 4),
+            saveSettingsDebounced: () => {},
+        };
+        globalThis.SillyTavern = { getContext: () => context };
+
+        __setStoreForTests(createMemoryStore());
+        __setHostForTests({ ok: true, warnings: [], openai: {}, tokenCounts: {}, utils: {} });
+
+        globalThis.fixtureDeactivate = deactivate;
+        globalThis.fixtureEmit = (...args) => eventSource.emit(...args);
+        globalThis.fixtureGetRouting = () => ({
+            shellCalls: structuredClone(shellCalls),
+            fallbackClicks,
+        });
+        globalThis.fixtureCloseShell = () => { shellPanel.hidden = true; };
+        globalThis.fixtureRemoveShellApi = () => { delete globalThis.SillyBunnyShell; };
+        // mountRuntimeUi returns the already-mounted controller, so the test can
+        // drive the same availability path the extension uses after loadHost().
+        globalThis.fixtureSetAvailability = value => mountRuntimeUi().setAvailability(value);
+
+        init();
+        await eventSource.emit(eventTypes.APP_READY);
+        globalThis.__ready = true;
+    </script>
+</body>
+</html>

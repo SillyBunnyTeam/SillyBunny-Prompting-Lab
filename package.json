@@ -1,0 +1,27 @@
+{
+    "name": "sillybunny-prompting-lab",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "description": "Save prompt test cases for your characters and check whether a preset, macro, or update changed the prompts they produce.",
+    "license": "AGPL-3.0",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/SillyBunnyTeam/SillyBunny-Prompting-Lab.git"
+    },
+    "engines": {
+        "node": ">=20"
+    },
+    "scripts": {
+        "lint": "node scripts/lint.js",
+        "test": "npm run lint && npm run test:unit",
+        "test:unit": "node --test test/*.test.js",
+        "test:browser": "playwright test --project=chromium",
+        "test:browser:all": "playwright test",
+        "test:browser:webkit": "playwright test --project=webkit",
+        "test:host": "PROMPT_LAB_REQUIRE_HOST=1 node --test test/host-contract.test.js"
+    },
+    "devDependencies": {
+        "@playwright/test": "^1.54.2"
+    }
+}

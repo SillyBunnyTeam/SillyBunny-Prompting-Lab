@@ -1,0 +1,111 @@
+import { expect, test } from '@playwright/test';
+
+test.beforeEach(async ({ page }) => {
+    await page.goto('/test/browser/fixture.html');
+    await page.waitForFunction(() => globalThis.__ready === true);
+});
+
+test('the settings drawer and wand item mount on app ready', async ({ page }) => {
+    await expect(page.locator('#sbpl-settings')).toBeAttached();
+    await expect(page.locator('#sbpl-menu-item')).toBeAttached();
+    await expect(page.locator('#sbpl-settings .extension_name')).toHaveText('Prompting Lab');
+});
+
+test('the drawer header carries a unique name so the shell can find it', async ({ page }) => {
+    const drawer = page.locator('#sbpl-settings');
+    await expect(drawer).toHaveAttribute('data-extension-name', 'SillyBunny-Prompting-Lab');
+    await expect(drawer.locator('.inline-drawer-toggle')).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('the wand item opens the extensions surface and reveals the workbench', async ({ page }) => {
+    await page.locator('#sbpl-menu-item').click();
+    await expect(page.locator('#sbpl-workbench')).toBeVisible();
+    const routing = await page.evaluate(() => globalThis.fixtureGetRouting());
+    expect(routing.shellCalls).toContainEqual(['right', 'extensions']);
+});
+
+test('the workbench exposes every tab and marks one as selected', async ({ page }) => {
+    await page.locator('#sbpl-menu-item').click();
+    const tabs = page.locator('#sbpl-workbench .sbpl-tab');
+    await expect(tabs).toHaveCount(5);
+    await expect(page.locator('.sbpl-tab[aria-selected="true"]')).toHaveCount(1);
+});
+
+test('tabs can be changed with the keyboard', async ({ page }) => {
+    await page.locator('#sbpl-menu-item').click();
+    await page.locator('#sbpl-tab-cases').focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('#sbpl-tab-run')).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('End');
+    await expect(page.locator('#sbpl-tab-settings')).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('Home');
+    await expect(page.locator('#sbpl-tab-cases')).toHaveAttribute('aria-selected', 'true');
+});
+
+test('the selected tab is the only one in the tab order', async ({ page }) => {
+    await page.locator('#sbpl-menu-item').click();
+    const tabIndexes = await page.locator('#sbpl-workbench .sbpl-tab').evaluateAll(
+        nodes => nodes.map(node => node.tabIndex),
+    );
+    expect(tabIndexes.filter(value => value === 0)).toHaveLength(1);
+});
+
+test('the mobile layout swaps the tab strip for a select', async ({ page }) => {
+    await page.setViewportSize({ width: 400, height: 800 });
+    await page.locator('#sbpl-menu-item').click();
+    await expect(page.locator('#sbpl-workbench .sbpl-tabs')).toBeHidden();
+    await expect(page.locator('#sbpl-workbench .sbpl-tab-select')).toBeVisible();
+});
+
+test('the page never scrolls sideways on a narrow screen', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 780 });
+    await page.locator('#sbpl-menu-item').click();
+    const overflows = await page.evaluate(
+        () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+    );
+    expect(overflows).toBe(false);
+});
+
+test('a ready host is reported as ready', async ({ page }) => {
+    await page.evaluate(() => globalThis.fixtureSetAvailability({ ok: true, warnings: [] }));
+    await expect(page.locator('#sbpl-settings .sbpl-settings-status'))
+        .toHaveText('Prompt testing is ready.');
+    await page.locator('#sbpl-menu-item').click();
+    await expect(page.locator('#sbpl-workbench .sbpl-availability')).toBeHidden();
+});
+
+test('an incompatible host is reported in the drawer and the workbench', async ({ page }) => {
+    await page.locator('#sbpl-menu-item').click();
+    await page.evaluate(() => globalThis.fixtureSetAvailability({
+        ok: false,
+        reason: 'Missing tools: ChatCompletion.',
+    }));
+    const status = page.locator('#sbpl-settings .sbpl-settings-status');
+    await expect(status).toHaveClass(/sbpl-settings-error/);
+    await expect(status).toHaveAttribute('title', /Missing tools: ChatCompletion\./);
+    const banner = page.locator('#sbpl-workbench .sbpl-availability');
+    await expect(banner).toBeVisible();
+    await expect(banner).toHaveText('Missing tools: ChatCompletion.');
+});
+
+test('host warnings are surfaced without blocking use', async ({ page }) => {
+    await page.locator('#sbpl-menu-item').click();
+    await page.evaluate(() => globalThis.fixtureSetAvailability({
+        ok: true,
+        warnings: ['Per-section token counts use a simpler calculation on this SillyBunny build.'],
+    }));
+    const banner = page.locator('#sbpl-workbench .sbpl-availability');
+    await expect(banner).toBeVisible();
+    await expect(banner).toHaveClass(/sbpl-availability-warning/);
+    await expect(page.locator('#sbpl-settings .sbpl-settings-status'))
+        .toHaveText('Prompt testing is ready.');
+});
+
+test('deactivate removes everything the extension added', async ({ page }) => {
+    await page.locator('#sbpl-menu-item').click();
+    await expect(page.locator('#sbpl-workbench')).toBeVisible();
+    await page.evaluate(() => globalThis.fixtureDeactivate());
+    await expect(page.locator('#sbpl-settings')).toHaveCount(0);
+    await expect(page.locator('#sbpl-menu-item')).toHaveCount(0);
+    await expect(page.locator('#sbpl-workbench')).toHaveCount(0);
+});
