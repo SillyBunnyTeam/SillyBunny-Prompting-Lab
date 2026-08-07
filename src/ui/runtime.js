@@ -302,11 +302,12 @@ export function mountRuntimeUi({ signal = null } = {}) {
         }
         document.getElementById('sbpl-menu-item')?.remove();
 
-        menuItem = element('button', {
+        // Wand entries must be divs: the host styles them via
+        // `#extensionsMenu > div`, and a <button> falls back to browser chrome.
+        menuItem = element('div', {
             id: 'sbpl-menu-item',
             className: 'list-group-item flex-container flexGap5 interactable sbpl-menu-item',
             attributes: {
-                type: 'button',
                 title: 'Open the Prompting Lab workspace to test prompts for your characters',
             },
         });
