@@ -3,6 +3,7 @@ import { button, element, emptyState, errorMessage, formatTokens, replace, statu
 import { loadHost } from '../host.js';
 import * as lab from '../lab.js';
 import { willCreateChatFile } from '../apply-state.js';
+import { avatarThumbnail } from './character-picker.js';
 import { dismissWarning, isWarningDismissed } from '../settings.js';
 import * as storage from '../storage.js';
 
@@ -232,10 +233,16 @@ export function createRunTab({ onRunFinished = null } = {}) {
         for (const testCase of report.cases) {
             const avatar = testCase.pins?.characterAvatar ?? '';
             const blockedReason = blockedById.get(testCase.id);
+            const characterName = names.get(avatar) || avatar || 'No character';
+            const characterCell = element('td');
+            if (avatar) {
+                characterCell.append(avatarThumbnail(avatar, characterName, 'sbpl-row-avatar'));
+            }
+            characterCell.append(element('span', { text: characterName }));
             const row = element('tr');
             row.append(
                 element('td', { text: testCase.name || 'Untitled test case' }),
-                element('td', { text: names.get(avatar) || avatar || 'No character' }),
+                characterCell,
                 element('td', { className: 'sbpl-number', text: String(testCase.assertions?.length ?? 0) }),
                 element('td', { text: activeSuite.baselines?.[testCase.id] ? 'Set' : 'None yet' }),
                 element('td', { text: blockedReason ?? 'Ready' }),
@@ -347,7 +354,16 @@ export function createRunTab({ onRunFinished = null } = {}) {
 
         for (const run of runs) {
             const row = element('tr');
-            row.append(element('td', { text: run.caseName || 'Untitled test case' }));
+            const nameCell = element('td');
+            if (run.environment?.characterAvatar) {
+                nameCell.append(avatarThumbnail(
+                    run.environment.characterAvatar,
+                    run.environment.characterName || '',
+                    'sbpl-row-avatar',
+                ));
+            }
+            nameCell.append(element('span', { text: run.caseName || 'Untitled test case' }));
+            row.append(nameCell);
             const statusCell = element('td');
             statusCell.append(statusChip(run.status));
             row.append(statusCell);

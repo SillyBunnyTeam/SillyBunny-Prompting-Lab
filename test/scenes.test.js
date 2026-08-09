@@ -6,6 +6,7 @@ import { installStubContext, removeStubContext } from './helpers/stub-context.js
 installStubContext();
 
 const {
+    breakReplyLines,
     CONTINUE_NUDGE,
     describeDuration,
     describeEstimate,
@@ -387,4 +388,44 @@ test('a web page export is named as one', () => {
         sceneFileName({ characterName: 'Aqua', format: 'html', savedAt: '2026-08-09T12:00:00.000Z' }),
         'prompting-lab-scene-aqua-2026-08-09.html',
     );
+});
+
+test('a saved web page keeps the line breaks the prose depends on', () => {
+    const reply = 'She turns away.\n\n<font color="#CC79A7">"There\'s tape on the counter,"</font> she says.\n\nThe tape goes on crooked.';
+    const page = formatScene({
+        columns: [{
+            label: 'Preset 1',
+            error: '',
+            caveats: [],
+            turns: [{ index: 1, userText: 'Line one.\nLine two.', text: reply, error: null, promptTokens: 10, durationMs: 1000 }],
+        }],
+    }, { format: 'html' });
+
+    // Three paragraphs of prose, so the breaks between them have to survive.
+    assert.equal((page.match(/<br>/g) ?? []).length, 4);
+    assert.match(page, /She turns away\.<br>/);
+    assert.match(page, /<font color="#CC79A7">"There's tape on the counter,"<\/font> she says\.<br>/);
+    // The typed turn is escaped text, kept by the page's own white-space rule.
+    assert.match(page, /white-space: pre-wrap/);
+    assert.match(page, /Line one\.\nLine two\./);
+});
+
+test('markup laid out across lines does not gain blank lines of its own', () => {
+    // Every line here ends between tags, so a tracker card written across
+    // several lines comes out exactly as it went in.
+    const tracker = '<details>\n  <summary>States</summary>\n  <b>Mood</b>\n</details>';
+    assert.equal(breakReplyLines(tracker), tracker);
+
+    // A line that ends in the middle of prose is a break the model meant.
+    assert.equal(
+        breakReplyLines('<b>Mara</b> looks up.\nShe says nothing.'),
+        '<b>Mara</b> looks up.<br>\nShe says nothing.',
+    );
+});
+
+test('the lines inside a style block are left exactly as written', () => {
+    const styled = '<style>\n.card { color: red;\n}\n</style>\nAfter the card.';
+    const broken = breakReplyLines(styled);
+    assert.match(broken, /<style>\n\.card \{ color: red;\n\}\n<\/style>/);
+    assert.doesNotMatch(broken.slice(0, broken.indexOf('</style>')), /<br>/);
 });

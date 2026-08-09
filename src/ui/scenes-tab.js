@@ -3,6 +3,7 @@ import { willCreateChatFile } from '../apply-state.js';
 import { CAVEAT_TEXT } from '../constants.js';
 import { button, element, errorMessage, field, formatTokens, promptField, replace, statusRegion } from '../dom.js';
 import { getContext, loadHost } from '../host.js';
+import { createCharacterPicker } from './character-picker.js';
 import * as lab from '../lab.js';
 import { CC_API_ID, labelForApiId, PRESET_API_IDS } from '../presets.js';
 import {
@@ -27,6 +28,7 @@ import { downloadExport } from '../transfer.js';
  */
 export function createScenesTab() {
     let root = null;
+    let characterPicker = null;
     let characterSelect = null;
     let profileSelect = null;
     let kindSelect = null;
@@ -79,13 +81,12 @@ export function createScenesTab() {
         }
 
         const previousCharacter = characterSelect.value;
-        replace(characterSelect, ...options.characters.map(character => element('option', {
-            text: character.name,
-            attributes: { value: character.avatar },
-        })));
-        if (options.characters.some(character => character.avatar === previousCharacter)) {
-            characterSelect.value = previousCharacter;
-        }
+        characterPicker.setCharacters(options.characters);
+        characterPicker.setValue(
+            options.characters.some(character => character.avatar === previousCharacter)
+                ? previousCharacter
+                : (options.characters[0]?.avatar ?? ''),
+        );
 
         const previousProfile = profileSelect.value;
         profiles = listComparableProfiles(getContext());
@@ -485,7 +486,8 @@ export function createScenesTab() {
     function build() {
         root = element('div', { className: 'sbpl-scenes-tab' });
 
-        characterSelect = element('select', { className: 'text_pole sbpl-select', attributes: { 'aria-label': 'Character' } });
+        characterPicker = createCharacterPicker({ label: 'Character' });
+        characterSelect = characterPicker.input;
         characterSelect.addEventListener('change', () => {
             updateControls();
             void checkChatFile();
@@ -559,7 +561,7 @@ export function createScenesTab() {
                 className: 'sbpl-settings-note',
                 text: 'Sends the same scene to a real model once for each preset, so you can read how each one plays it out. This uses tokens. Nothing is added to any chat; your character, preset and connection change while it runs and are put back afterwards.',
             }),
-            field('Character', characterSelect),
+            characterPicker.node,
             chatFileNote,
             field('Connection', profileSelect, { hint: 'Every preset is sent through this same connection.' }),
             field('Preset kind', kindSelect),

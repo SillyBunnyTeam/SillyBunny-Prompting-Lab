@@ -140,6 +140,8 @@ function readEnvironment(hostRef, capture, integrations, testCase) {
         presets: readPresets(hostRef, testCase),
         personaName: String(context?.name1 ?? ''),
         characterName: String(context?.characters?.[characterIndex]?.name ?? ''),
+        // Kept so a saved run can show whose prompt it was, not only its name.
+        characterAvatar: String(context?.characters?.[characterIndex]?.avatar ?? ''),
         promptTagsProfile: integrations?.promptTags ?? null,
         macroEnhanced: integrations?.macroEnhanced ?? null,
     };

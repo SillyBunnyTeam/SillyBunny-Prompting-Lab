@@ -83,6 +83,12 @@ A test case is one character and its prompt settings. A suite is a group of test
 together. Every setting is chosen from what you actually have installed, so a test cannot name a
 character or preset that is not there.
 
+Characters are chosen from a list of faces with a search box, the same picker Chats Archive uses,
+rather than a long dropdown of names: type a few letters to narrow it, or walk the list with the
+arrow keys. A test case pinning a character you have since deleted says so instead of looking
+blank. The same picker chooses the character card on Compare prompts and Compare scenes, and saved
+test cases, the run queue and the results all show the face beside the name.
+
 A test case can pin a Chat Completion preset, or any of the five Text Completion pieces: the
 sampler preset, the context template, the instruct template, the system prompt, and the reasoning
 template. It cannot pin both kinds at once, because only one of them builds the prompt.

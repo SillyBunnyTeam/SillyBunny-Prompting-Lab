@@ -136,6 +136,37 @@ export function sanitizeReplyHtml(value) {
         .replace(/javascript:/gi, 'blocked:');
 }
 
+/** Elements whose text is not prose, and whose lines must be left alone. */
+const RAW_TEXT_TAG = /^<\s*(\/)?\s*(style|pre|textarea)\b/i;
+
+/**
+ * A reply is prose with some markup in it, and HTML throws prose line breaks
+ * away. Turn the breaks inside text into `<br>`, and leave the whitespace
+ * between tags alone: markup arrives indented across lines, and every one of
+ * those would otherwise open a gap the model never wrote.
+ */
+export function breakReplyLines(value) {
+    const parts = String(value ?? '').split(/(<[^>]*>)/);
+    let raw = false;
+    return parts.map((chunk, index) => {
+        if (index % 2 === 1) {
+            const match = chunk.match(RAW_TEXT_TAG);
+            if (match) {
+                raw = !match[1];
+            }
+            return chunk;
+        }
+        if (raw || !chunk.trim()) {
+            return chunk;
+        }
+        // Only the breaks after the text starts are the model's own. A chunk
+        // opening with a newline is markup that was laid out across lines, and
+        // breaking there would push every card down a line it never asked for.
+        const lead = chunk.match(/^\s*/)[0];
+        return lead + chunk.slice(lead.length).replace(/\r?\n/g, '<br>\n');
+    }).join('');
+}
+
 /** The saved page's own styling, kept small enough to read. */
 const SCENE_PAGE_STYLE = `
     :root { color-scheme: light dark; }
@@ -147,7 +178,8 @@ const SCENE_PAGE_STYLE = `
     .column { padding: 1rem; border: 1px solid rgba(128, 128, 128, 0.4); border-radius: 0.5rem; min-width: 0; }
     .column > h2 { margin: 0 0 0.75rem; font-size: 1.1rem; }
     .meta { margin: 1rem 0 0.25rem; font-family: ui-monospace, monospace; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.6; }
-    .said { margin: 0 0 0.5rem; padding-left: 0.6rem; border-left: 2px solid rgba(128, 128, 128, 0.5); font-style: italic; opacity: 0.85; }
+    /* What was typed is plain text, so its own line breaks have to survive. */
+    .said { margin: 0 0 0.5rem; padding-left: 0.6rem; border-left: 2px solid rgba(128, 128, 128, 0.5); font-style: italic; opacity: 0.85; white-space: pre-wrap; }
     .reply { overflow-wrap: break-word; }
     .reply img, .reply table { max-width: 100%; }
     .failed { color: #c0392b; }
@@ -175,7 +207,7 @@ function sceneHtmlPage(result, { characterName, connectionName, savedAt }) {
             parts.push(`<p class="said">${escapeHtml(turn.userText)}</p>`);
             parts.push(turn.error
                 ? `<p class="failed">${escapeHtml(turn.error)}</p>`
-                : `<div class="reply">${sanitizeReplyHtml(turn.text)}</div>`);
+                : `<div class="reply">${breakReplyLines(sanitizeReplyHtml(turn.text))}</div>`);
         }
         return `<section class="column">\n${parts.join('\n')}\n</section>`;
     }).join('\n');

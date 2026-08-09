@@ -5,6 +5,7 @@ import * as lab from '../lab.js';
 import { MODE, PRESET_API_IDS, labelForApiId, modeOf } from '../presets.js';
 import { createCase, createSuite, pinnedMode, validateCase } from '../schema.js';
 import * as storage from '../storage.js';
+import { avatarThumbnail, createCharacterPicker } from './character-picker.js';
 
 const SCOPES = ['total', 'system', 'final'];
 
@@ -18,6 +19,7 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
     let suiteSelect = null;
     let searchInput = null;
     let listHost = null;
+    let characterNames = new Map();
     let editorHost = null;
     let status = null;
 
@@ -65,8 +67,23 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
         ].join(' ').toLowerCase().includes(term));
     }
 
+    /** Names for the avatars a case pins, so a list reads as people not files. */
+    function refreshCharacterNames() {
+        try {
+            characterNames = new Map(lab.readAvailableOptions(getContext())
+                .characters.map(item => [item.avatar, item.name]));
+        } catch {
+            characterNames = new Map();
+        }
+    }
+
+    function characterName(testCase) {
+        const avatar = testCase?.pins?.characterAvatar ?? '';
+        return characterNames.get(avatar) || avatar;
+    }
+
     function describeCase(testCase) {
-        const parts = [testCase.pins.characterAvatar || 'no character'];
+        const parts = [characterName(testCase) || 'no character'];
         for (const ref of testCase.pins.presets) {
             parts.push(ref.name);
         }
@@ -79,6 +96,7 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
 
     function renderList() {
         replace(listHost);
+        refreshCharacterNames();
         if (!activeSuite) {
             listHost.append(emptyState(
                 'No test suites yet.',
@@ -116,8 +134,13 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
             });
 
             const label = element('div', { className: 'sbpl-case-label' });
+            const name = element('span', { className: 'sbpl-case-name' });
+            name.append(
+                avatarThumbnail(testCase.pins.characterAvatar, characterName(testCase), 'sbpl-row-avatar'),
+                element('span', { text: testCase.name }),
+            );
             label.append(
-                element('span', { className: 'sbpl-case-name', text: testCase.name }),
+                name,
                 element('span', { className: 'sbpl-case-meta', text: describeCase(testCase) }),
             );
 
@@ -245,15 +268,11 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
         nameInput.value = editing.name;
         nameInput.addEventListener('input', () => { editing.name = nameInput.value; });
 
-        const characterSelect = element('select', { className: 'text_pole sbpl-select' });
-        optionList(characterSelect, options.characters, {
-            valueKey: 'avatar',
-            labelKey: 'name',
-            includeBlank: 'Choose a character',
-        });
-        characterSelect.value = editing.pins.characterAvatar;
-        characterSelect.addEventListener('change', () => {
-            editing.pins.characterAvatar = characterSelect.value;
+        const characterPicker = createCharacterPicker({ label: 'Character' });
+        characterPicker.setCharacters(options.characters);
+        characterPicker.setValue(editing.pins.characterAvatar);
+        characterPicker.input.addEventListener('change', () => {
+            editing.pins.characterAvatar = characterPicker.value;
         });
 
         const personaSelect = element('select', { className: 'text_pole sbpl-select' });
@@ -326,7 +345,7 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
 
         form.append(
             field('Name', nameInput),
-            field('Character', characterSelect),
+            characterPicker.node,
             field('Persona', personaSelect),
             field('Connection profile', profileSelect),
             field('Prompt Tags profile', promptTagsSelect),

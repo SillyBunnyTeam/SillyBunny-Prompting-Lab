@@ -140,7 +140,10 @@
 
         const context = {
             characterId: 0,
-            characters: [{ avatar: 'tester.png', name: 'Tester', data: { extensions: {} } }],
+            characters: [
+                { avatar: 'tester.png', name: 'Tester', data: { extensions: {} } },
+                { avatar: 'seraphina.png', name: 'Seraphina', data: { extensions: {} } },
+            ],
             chat: [],
             chatMetadata: {},
             extensionSettings: {},
@@ -149,6 +152,9 @@
             mainApi: 'openai',
             powerUserSettings: { personas: {} },
             getTokenCountAsync: async text => Math.ceil(String(text).length / 4),
+            // A 1x1 transparent PNG, so the picker's images resolve without the
+            // fixture server having to serve character thumbnails.
+            getThumbnailUrl: (type, file) => `data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==#${type}/${file}`,
             saveSettingsDebounced: () => {},
             getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
             getPresetManager: (apiId = 'openai') => {

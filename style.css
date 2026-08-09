@@ -953,6 +953,158 @@
     opacity: 0.85;
 }
 
+/* ---- character picker ---- */
+
+.sbpl-picker-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25em;
+    min-width: 0;
+}
+
+.sbpl-picker {
+    position: relative;
+}
+
+.sbpl-picker-summary {
+    display: flex;
+    box-sizing: border-box;
+    gap: 0.5em;
+    align-items: center;
+    min-height: 2.6em;
+    padding: 0.3em 0.6em;
+    cursor: pointer;
+    list-style: none;
+}
+
+.sbpl-picker-summary::-webkit-details-marker {
+    display: none;
+}
+
+/* The chevron, rotated to point the way the menu will move. */
+.sbpl-picker-summary::after {
+    width: 0.45em;
+    height: 0.45em;
+    margin-left: auto;
+    border-bottom: 2px solid currentColor;
+    border-right: 2px solid currentColor;
+    content: '';
+    transform: rotate(45deg);
+}
+
+.sbpl-picker[open] > .sbpl-picker-summary::after {
+    transform: rotate(225deg);
+}
+
+.sbpl-picker-menu {
+    position: absolute;
+    /* Above the workspace's own layers, or the menu opens behind the panel. */
+    z-index: 4100;
+    top: calc(100% + 0.25em);
+    left: 0;
+    right: 0;
+    box-sizing: border-box;
+    padding: 0.5em;
+    border: 1px solid var(--sbpl-line, var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4)));
+    border-radius: 0.5em;
+    background: var(--sbpl-surface, var(--SmartThemeBlurTintColor, #1b1f20));
+}
+
+.sbpl-picker-search {
+    box-sizing: border-box;
+    width: 100%;
+}
+
+.sbpl-picker-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15em;
+    max-height: min(20em, 45vh);
+    margin-top: 0.4em;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.sbpl-picker-option {
+    display: flex;
+    gap: 0.5em;
+    align-items: center;
+    width: 100%;
+    min-height: 2.75em;
+    margin: 0;
+    padding: 0.3em 0.4em;
+    border: 1px solid transparent;
+    border-radius: 0.4em;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* The search hides options with [hidden], which the display rule above would
+   otherwise win against at equal specificity. */
+.sbpl-picker-option[hidden] {
+    display: none;
+}
+
+.sbpl-picker-option:hover {
+    border-color: var(--sbpl-line, var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4)));
+}
+
+.sbpl-picker-option[aria-pressed="true"] {
+    border-color: var(--active, currentColor);
+    background-color: var(--white20a, rgba(255, 255, 255, 0.1));
+    font-weight: 600;
+}
+
+.sbpl-picker-avatar {
+    width: 2em;
+    height: 2em;
+    flex: 0 0 2em;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
+.sbpl-picker-avatar-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.6;
+}
+
+.sbpl-picker-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+}
+
+.sbpl-picker-name,
+.sbpl-picker-meta {
+    overflow-wrap: anywhere;
+}
+
+.sbpl-picker-meta,
+.sbpl-picker-empty {
+    font-size: calc(var(--mainFontSize, 1rem) * 0.85);
+    opacity: 0.7;
+}
+
+.sbpl-picker-empty {
+    margin: 0.4em 0 0;
+}
+
+/* A face beside a name in the lists, at reading size. */
+.sbpl-row-avatar {
+    width: 1.6em;
+    height: 1.6em;
+    flex: 0 0 1.6em;
+    margin-right: 0.4em;
+    border-radius: 50%;
+    object-fit: cover;
+    vertical-align: middle;
+}
+
 /* ---- comparison ---- */
 
 /* The setups a test case is built under, one row each, and what they produced. */

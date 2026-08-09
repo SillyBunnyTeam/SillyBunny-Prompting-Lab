@@ -16,6 +16,16 @@ async function switchTab(page, tab) {
     return page.locator('#sbpl-panel');
 }
 
+/**
+ * Chooses a character in the avatar picker that replaced the old dropdown:
+ * open the menu, then press the option carrying that name.
+ */
+async function pickCharacter(scope, name) {
+    const picker = scope.locator('.sbpl-picker').first();
+    await picker.locator('summary').click();
+    await picker.getByRole('button', { name, exact: true }).click();
+}
+
 /** Opens the workbench on a fresh fixture page and switches to a tab. */
 async function openTab(page, tab) {
     await page.goto('/test/browser/fixture.html');
@@ -51,7 +61,7 @@ test('a suite and a test case can be created and saved', async ({ page }) => {
     const editor = panel.locator('.sbpl-editor');
     await expect(editor).toBeVisible();
 
-    await editor.locator('select').first().selectOption('tester.png');
+    await pickCharacter(editor, 'Tester');
     await editor.getByRole('textbox', { name: 'Example message' }).fill('Tell me about the vault.');
     await panel.locator('button', { hasText: 'Save test case' }).click();
 
@@ -63,7 +73,7 @@ test('deleting a test case takes two presses, not one slip', async ({ page }) =>
     const panel = await openTab(page, 'cases');
     await panel.getByRole('button', { name: 'Create suite' }).click();
     await panel.getByRole('button', { name: 'Add test case' }).click();
-    await panel.locator('.sbpl-editor select').first().selectOption('tester.png');
+    await pickCharacter(panel.locator('.sbpl-editor'), 'Tester');
     await panel.locator('button', { hasText: 'Save test case' }).click();
     await expect(panel.locator('.sbpl-case-item')).toHaveCount(1);
 
@@ -101,22 +111,93 @@ test('the personas and profiles offered come from the host', async ({ page }) =>
     await panel.getByRole('button', { name: 'Create suite' }).click();
     await panel.getByRole('button', { name: 'Add test case' }).click();
     const selects = panel.locator('.sbpl-editor select');
-    await expect(selects.nth(1)).toContainText('Me');
-    await expect(selects.nth(2)).toContainText('Claude');
-    await expect(selects.nth(3)).toContainText('Tagged');
-    await expect(selects.nth(4)).toContainText('Deep');
+    await expect(selects.nth(0)).toContainText('Me');
+    await expect(selects.nth(1)).toContainText('Claude');
+    await expect(selects.nth(2)).toContainText('Tagged');
+    await expect(selects.nth(3)).toContainText('Deep');
 });
 
 test('a Prompt Tags profile can be pinned from the case editor', async ({ page }) => {
     const panel = await openTab(page, 'cases');
     await panel.getByRole('button', { name: 'Create suite' }).click();
     await panel.getByRole('button', { name: 'Add test case' }).click();
-    const selects = panel.locator('.sbpl-editor select');
-    await selects.nth(0).selectOption('tester.png');
-    await selects.nth(3).selectOption('Tagged');
+    await pickCharacter(panel.locator('.sbpl-editor'), 'Tester');
+    await panel.locator('.sbpl-editor select').nth(2).selectOption('Tagged');
     await panel.locator('button', { hasText: 'Save test case' }).click();
     await panel.locator('button', { hasText: 'Edit' }).click();
-    await expect(panel.locator('.sbpl-editor select').nth(3)).toHaveValue('Tagged');
+    await expect(panel.locator('.sbpl-editor select').nth(2)).toHaveValue('Tagged');
+});
+
+test('the character picker shows faces and filters as you type', async ({ page }) => {
+    const panel = await openTab(page, 'cases');
+    await panel.getByRole('button', { name: 'Create suite' }).click();
+    await panel.getByRole('button', { name: 'Add test case' }).click();
+
+    const picker = panel.locator('.sbpl-picker').first();
+    await picker.locator('summary').click();
+    const options = picker.locator('.sbpl-picker-option');
+    await expect(options).toHaveCount(2);
+    await expect(options.first().locator('img')).toHaveAttribute('src', /^data:image\/png/);
+
+    // Read as a snapshot rather than a retrying assertion: a retry loop keeps
+    // the page busy for seconds, and any focus churn in that window reopens
+    // the menu, which clears the search being tested.
+    const shownAfter = async (query) => {
+        await picker.locator('.sbpl-picker-search').fill(query);
+        return page.evaluate(() => ({
+            names: [...document.querySelectorAll('.sbpl-picker-option')]
+                .filter(node => !node.hidden)
+                .map(node => node.getAttribute('aria-label')),
+            emptyShown: !document.querySelector('.sbpl-picker-empty').hidden,
+        }));
+    };
+
+    expect(await shownAfter('sera')).toEqual({ names: ['Seraphina'], emptyShown: false });
+    expect(await shownAfter('nobody')).toEqual({ names: [], emptyShown: true });
+
+    await picker.locator('.sbpl-picker-search').fill('sera');
+    await picker.getByRole('button', { name: 'Seraphina', exact: true }).click();
+    await expect(picker.locator('summary')).toContainText('Seraphina');
+    // Choosing closes the menu and hands focus back, so the keyboard does not
+    // end up inside a list that is no longer on screen.
+    await expect(picker.locator('.sbpl-picker-menu')).toBeHidden();
+    await expect(picker.locator('summary')).toBeFocused();
+});
+
+test('the character picker can be driven by the keyboard alone', async ({ page }) => {
+    const panel = await openTab(page, 'cases');
+    await panel.getByRole('button', { name: 'Create suite' }).click();
+    await panel.getByRole('button', { name: 'Add test case' }).click();
+
+    const picker = panel.locator('.sbpl-picker').first();
+    await picker.locator('summary').click();
+    await picker.locator('.sbpl-picker-search').focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(picker.getByRole('button', { name: 'Tester', exact: true })).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await expect(picker.getByRole('button', { name: 'Seraphina', exact: true })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(picker.locator('summary')).toContainText('Seraphina');
+
+    await picker.locator('summary').click();
+    await page.keyboard.press('Escape');
+    await expect(picker.locator('.sbpl-picker-menu')).toBeHidden();
+});
+
+test('the character chosen in the picker is what the test case saves', async ({ page }) => {
+    const panel = await openTab(page, 'cases');
+    await panel.getByRole('button', { name: 'Create suite' }).click();
+    await panel.getByRole('button', { name: 'Add test case' }).click();
+    await pickCharacter(panel.locator('.sbpl-editor'), 'Seraphina');
+    await panel.locator('button', { hasText: 'Save test case' }).click();
+
+    const item = panel.locator('.sbpl-case-item');
+    await expect(item).toContainText('Seraphina');
+    await expect(item.locator('img.sbpl-row-avatar')).toBeVisible();
+
+    // Reopening reads the pin back rather than falling to the first character.
+    await item.getByRole('button', { name: 'Edit' }).click();
+    await expect(panel.locator('.sbpl-picker').first().locator('summary')).toContainText('Seraphina');
 });
 
 test('the presets tab lists what the host has installed', async ({ page }) => {
@@ -264,7 +345,7 @@ test('the run tab lists what a run would do before it is started', async ({ page
     const cases = await openTab(page, 'cases');
     await cases.getByRole('button', { name: 'Create suite' }).click();
     await cases.getByRole('button', { name: 'Add test case' }).click();
-    await cases.locator('.sbpl-editor select').first().selectOption('tester.png');
+    await pickCharacter(cases.locator('.sbpl-editor'), 'Tester');
     await cases.locator('button', { hasText: 'Save test case' }).click();
     await expect(cases.locator('.sbpl-case-item')).toHaveCount(1);
 

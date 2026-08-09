@@ -3,6 +3,7 @@ import { button, element, emptyState, errorMessage, field, promptField, replace,
 import { readCharacterCard, requestAnalysis, runExperiment } from '../experiment.js';
 import { getContext } from '../host.js';
 import { getSelectedVersion } from '../prompt-drafts.js';
+import { createCharacterPicker } from './character-picker.js';
 import { getSettings, updateSettings } from '../settings.js';
 import * as storage from '../storage.js';
 
@@ -24,6 +25,7 @@ export function createExperimentTab() {
     let loaderPromptSelect = null;
     let loaderVersionSelect = null;
     let roleSelect = null;
+    let characterPicker = null;
     let characterSelect = null;
     let scenarioTextarea = null;
     let profileSelect = null;
@@ -103,17 +105,8 @@ export function createExperimentTab() {
         characters = (getContext()?.characters ?? [])
             .filter(character => character?.avatar)
             .map(character => ({ avatar: character.avatar, name: character.name ?? character.avatar }));
-        replace(
-            characterSelect,
-            element('option', { text: 'No character card', attributes: { value: '' } }),
-            ...characters.map(character => element('option', {
-                text: character.name,
-                attributes: { value: character.avatar },
-            })),
-        );
-        if (characters.some(character => character.avatar === previous)) {
-            characterSelect.value = previous;
-        }
+        characterPicker.setCharacters(characters);
+        characterPicker.setValue(characters.some(character => character.avatar === previous) ? previous : '');
     }
 
     function updateControls() {
@@ -344,10 +337,12 @@ export function createExperimentTab() {
             roleSelect.append(element('option', { text: role, attributes: { value: role } }));
         }
 
-        characterSelect = element('select', {
-            className: 'text_pole sbpl-select',
-            attributes: { 'aria-label': 'Character card to test with' },
+        characterPicker = createCharacterPicker({
+            label: 'Character card',
+            includeBlank: true,
+            blankLabel: 'No character card',
         });
+        characterSelect = characterPicker.input;
 
         scenarioTextarea = element('textarea', {
             className: 'text_pole sbpl-textarea',
@@ -393,8 +388,10 @@ export function createExperimentTab() {
             promptPair,
             loader,
             field('Speaking as', roleSelect),
-            field('Character card', characterSelect, {
-                hint: 'Adds the character\'s description, personality, scenario, and greeting to both requests.',
+            characterPicker.node,
+            element('span', {
+                className: 'sbpl-field-hint',
+                text: 'Adds the character\'s description, personality, scenario, and greeting to both requests.',
             }),
             field('Test message', scenarioTextarea, {
                 hint: 'Sent as the user message in both requests. Left empty, a plain "Hello." is sent.',

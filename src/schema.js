@@ -556,6 +556,7 @@ export function normalizeRun(value) {
             }).filter(ref => ref.apiId && ref.name),
             personaName: text(environment.personaName),
             characterName: text(environment.characterName),
+            characterAvatar: text(environment.characterAvatar),
             promptTagsProfile: environment.promptTagsProfile ?? null,
             macroEnhanced: environment.macroEnhanced ?? null,
         },
