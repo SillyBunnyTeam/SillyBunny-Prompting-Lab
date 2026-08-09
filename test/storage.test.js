@@ -172,3 +172,17 @@ test('preset drafts round-trip and can be removed', async () => {
     assert.equal(await storage.getDraft(draft.id), null);
     assert.deepEqual(await storage.listDrafts(), []);
 });
+
+test('a run remembers which setup produced it, in the index as well as the record', async () => {
+    reset();
+    const saved = await storage.saveRun({
+        caseId: 'case-1',
+        status: 'pass',
+        startedAt: '2020-01-01T00:00:00.000Z',
+        variantLabel: 'Preset 2 · Second connection',
+    });
+
+    assert.equal((await storage.getRun(saved.id)).variantLabel, 'Preset 2 · Second connection');
+    // The comparison tab labels its run menus from the index alone.
+    assert.equal((await storage.listRuns('case-1'))[0].variantLabel, 'Preset 2 · Second connection');
+});

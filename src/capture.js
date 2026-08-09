@@ -360,26 +360,46 @@ export function createCaptureSession(hostRef = getContext) {
  * finally block so an error cannot leave it behind.
  */
 export async function withTransientUserMessage(hostRef, messageText, run) {
+    return withTransientMessages(hostRef, [{ role: 'user', text: messageText }], run);
+}
+
+/**
+ * The same trick for a whole exchange: a scene comparison replays several turns
+ * of user messages and model replies, and each later turn has to be built with
+ * the ones before it in the chat, exactly as a real conversation would.
+ *
+ * Entries are `{role: 'user'|'assistant', text}`. Empty ones are ignored, and
+ * every entry added is removed again by identity, newest first.
+ */
+export async function withTransientMessages(hostRef, entries, run) {
     const context = ctxOf(hostRef);
-    const text = String(messageText ?? '');
-    if (!text || !Array.isArray(context?.chat)) {
+    const usable = (entries ?? [])
+        .map(entry => ({ role: entry?.role === 'assistant' ? 'assistant' : 'user', text: String(entry?.text ?? '') }))
+        .filter(entry => entry.text);
+    if (!usable.length || !Array.isArray(context?.chat)) {
         return run();
     }
-    const entry = {
-        name: context.name1 ?? 'You',
-        is_user: true,
-        is_system: false,
-        send_date: new Date().toISOString(),
-        mes: text,
-        extra: {},
-    };
-    context.chat.push(entry);
+
+    const added = usable.map((entry) => {
+        const isUser = entry.role === 'user';
+        return {
+            name: (isUser ? context.name1 : context.name2) ?? (isUser ? 'You' : 'Assistant'),
+            is_user: isUser,
+            is_system: false,
+            send_date: new Date().toISOString(),
+            mes: entry.text,
+            extra: {},
+        };
+    });
+    context.chat.push(...added);
     try {
         return await run();
     } finally {
-        const index = context.chat.indexOf(entry);
-        if (index !== -1) {
-            context.chat.splice(index, 1);
+        for (const entry of [...added].reverse()) {
+            const index = context.chat.indexOf(entry);
+            if (index !== -1) {
+                context.chat.splice(index, 1);
+            }
         }
     }
 }
@@ -388,18 +408,24 @@ export async function withTransientUserMessage(hostRef, messageText, run) {
  * Runs one dry-run assembly and returns everything observed.
  * @returns {Promise<object>} capture result with sections, tokens and caveats.
  */
-export async function captureOnce({ userMessage = '', context = getContext, host = null } = {}) {
+export async function captureOnce({ userMessage = '', scene = null, context = getContext, host = null } = {}) {
     const hostRef = context;
     if (typeof ctxOf(hostRef)?.generate !== 'function') {
         throw new Error('Prompting Lab cannot build a prompt because SillyBunny\'s generate function is unavailable. Reload SillyBunny and try again.');
     }
 
+    // A test case injects one message; a scene comparison injects the exchange
+    // so far. Both are removed again once the prompt has been built.
+    const entries = Array.isArray(scene) && scene.length
+        ? scene
+        : [{ role: 'user', text: userMessage }];
+
     const session = createCaptureSession(hostRef);
     session.attach();
     try {
-        await withTransientUserMessage(
+        await withTransientMessages(
             hostRef,
-            userMessage,
+            entries,
             () => ctxOf(hostRef).generate('normal', {}, true),
         );
     } finally {

@@ -7,6 +7,7 @@ import { createExperimentTab } from './experiment-tab.js';
 import { createPresetsTab } from './presets-tab.js';
 import { createPromptsTab } from './prompts-tab.js';
 import { createRunTab } from './run-tab.js';
+import { createScenesTab } from './scenes-tab.js';
 import { createSettingsTab } from './settings-tab.js';
 import { createWorkbench } from './workbench.js';
 
@@ -153,6 +154,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
     const diffTab = createDiffTab();
     const experimentTab = createExperimentTab();
     const abTab = createAbTab();
+    const scenesTab = createScenesTab();
     workbench.registerTab(TAB.CASES, casesTab);
     workbench.registerTab(TAB.PRESETS, presetsTab);
     workbench.registerTab(TAB.PROMPTS, promptsTab);
@@ -167,6 +169,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
         },
     });
     workbench.registerTab(TAB.AB, abTab);
+    workbench.registerTab(TAB.SCENES, scenesTab);
     workbench.registerTab(TAB.SETTINGS, settingsTab);
 
     function syncDrawerAccessibility() {

@@ -955,6 +955,59 @@
 
 /* ---- comparison ---- */
 
+/* The setups a test case is built under, one row each, and what they produced. */
+.sbpl-setups,
+.sbpl-setup-rows,
+.sbpl-setup-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6em;
+    min-width: 0;
+}
+
+.sbpl-setups,
+.sbpl-setup-summary {
+    margin: 0.6em 0;
+}
+
+.sbpl-setups:empty,
+.sbpl-setup-summary:empty {
+    display: none;
+}
+
+/* One scene played under several presets. */
+.sbpl-scenes-tab,
+.sbpl-scene-turns,
+.sbpl-scene-presets {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6em;
+    min-width: 0;
+}
+
+.sbpl-scene-presets {
+    flex-flow: row wrap;
+    gap: 0.3em 1em;
+}
+
+.sbpl-scene-turn-label {
+    margin: 0.6em 0 0.2em;
+    font-family: var(--monoFontFamily, monospace);
+    font-size: calc(var(--mainFontSize, 1rem) * 0.75);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.6;
+}
+
+/* What was said to the model, kept distinct from what came back. */
+.sbpl-scene-said {
+    margin: 0 0 0.3em;
+    padding-left: 0.6em;
+    border-left: 2px solid var(--sbpl-line, var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4)));
+    font-style: italic;
+    opacity: 0.85;
+}
+
 .sbpl-raw-toggle {
     display: flex;
     align-items: center;

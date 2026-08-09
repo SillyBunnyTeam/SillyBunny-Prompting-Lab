@@ -529,6 +529,10 @@ export function normalizeRun(value) {
         suiteId: text(source.suiteId),
         caseId: text(source.caseId),
         caseName: text(source.caseName),
+        // Set when this run is one setup of a setup comparison: the preset and
+        // connection it was built with, so two runs of one case can be told
+        // apart by what was changed rather than by the time they ran.
+        variantLabel: text(source.variantLabel),
         startedAt: text(source.startedAt),
         durationMs: integer(source.durationMs, 0, 0),
         status: STATUS_VALUES.has(source.status) ? source.status : STATUS.ERROR,

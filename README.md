@@ -18,8 +18,9 @@ It can help when:
 - You want to know whether a macro is breaking prompt caching and costing you money.
 - You maintain cards or presets for other people and want to check them before release.
 
-Prompt tests do not send messages or use tokens. **Compare prompts** and **Compare models** are the
-only tabs that send a prompt and use tokens, and they do nothing until you press their buttons.
+Prompt tests do not send messages or use tokens. **Compare prompts**, **Compare models** and
+**Compare scenes** are the only tabs that send a prompt and use tokens, and they do nothing until
+you press their buttons.
 
 ## Install
 
@@ -74,7 +75,7 @@ On a wide screen the lists and the editor sit next to each other, so opening a
 test case or a preset does not push the list you picked it from off the screen.
 The same lab in the Extensions drawer keeps its compact row of tabs instead.
 
-## The eight tabs
+## The nine tabs
 
 ### Tests
 
@@ -155,6 +156,17 @@ default so a real change stands out; there is a switch to show them.
 If the two runs were made with different settings, such as a different model or a changed macro
 pack, that is listed above the differences.
 
+It can also make the two runs for you. Choose a test case, pick a preset and a connection for
+**Setup A** and another for **Setup B**, and the same test case is built once under each. The
+character, persona, example message and checks stay as the test case has them, so the setup is the
+only difference between the two prompts, and the comparison opens on the pair as soon as they are
+built. This is how to answer "what does this scenario look like under preset 1 against preset 2",
+or under two different models, without editing the test case. Nothing is sent, so it costs no
+tokens.
+
+A test case that pins Text Completion presets swaps only the kind it pins first; the other four
+templates stay as the test case has them.
+
 ### Compare prompts
 
 Tests a prompt against a modified version of it. Both versions are sent through the same
@@ -173,6 +185,23 @@ you are using does not change.
 
 Sends a saved prompt to two connections and shows both replies next to each other. Nothing is added
 to any chat, and the connection you are using does not change.
+
+### Compare scenes
+
+Plays the same scene under several presets and shows what each one wrote, side by side. Choose a
+character, a connection, and two to four presets, then write the scene: either the turns you want
+sent, or one opening message and how many exchanges to let it run for.
+
+Each preset gets its own column. Within a column, the prompt is rebuilt the way SillyBunny would
+with everything said so far already in the chat, sent, and the reply becomes part of the scene
+before the next turn is built. Scripted turns mean every preset faces the same words; letting it run
+shows how a preset carries a scene on its own, and from the second turn each column is answering its
+own replies rather than the same input.
+
+Before you press the button it says how many requests that will be and roughly how many reply tokens
+they may use. Nothing is added to any chat: the turns are put into the chat in memory only for as
+long as it takes to build the prompt. Your character, preset and connection change while it runs and
+are put back afterwards, including when you stop it or when a reply fails.
 
 ### Settings
 

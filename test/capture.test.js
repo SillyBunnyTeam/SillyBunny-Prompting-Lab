@@ -11,6 +11,7 @@ const {
     createCaptureSession,
     readChatCompletionSections,
     readTextCompletionSections,
+    withTransientMessages,
     withTransientUserMessage,
 } = await import('../src/capture.js');
 
@@ -109,6 +110,40 @@ test('withTransientUserMessage does nothing when there is no message', async () 
     let ran = false;
     await withTransientUserMessage(context, '', async () => { ran = true; });
     assert.equal(ran, true);
+    assert.deepEqual(context.chat, []);
+});
+
+test('withTransientMessages replays a whole exchange and takes all of it back out', async () => {
+    const context = { chat: [{ mes: 'existing' }], name1: 'You', name2: 'Aqua' };
+    let seen = [];
+    await withTransientMessages(context, [
+        { role: 'user', text: 'I open the door.' },
+        { role: 'assistant', text: 'She looks up.' },
+        { role: 'user', text: '"Who sent you?"' },
+    ], async () => {
+        seen = context.chat.map(entry => [entry.mes, entry.is_user, entry.name]);
+    });
+
+    assert.deepEqual(seen, [
+        ['existing', undefined, undefined],
+        ['I open the door.', true, 'You'],
+        ['She looks up.', false, 'Aqua'],
+        ['"Who sent you?"', true, 'You'],
+    ]);
+    assert.deepEqual(context.chat.map(entry => entry.mes), ['existing']);
+});
+
+test('withTransientMessages clears the exchange even when the build throws', async () => {
+    const context = { chat: [], name1: 'You', name2: 'Aqua' };
+    await assert.rejects(
+        () => withTransientMessages(context, [
+            { role: 'user', text: 'One' },
+            { role: 'assistant', text: 'Two' },
+        ], async () => {
+            throw new Error('assembly failed');
+        }),
+        /assembly failed/,
+    );
     assert.deepEqual(context.chat, []);
 });
 

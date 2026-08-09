@@ -127,6 +127,7 @@ export const TAB = Object.freeze({
     DIFF: 'diff',
     EXPERIMENT: 'experiment',
     AB: 'ab',
+    SCENES: 'scenes',
     SETTINGS: 'settings',
 });
 
@@ -138,6 +139,7 @@ export const TAB_LABEL = Object.freeze({
     [TAB.DIFF]: 'Compare runs',
     [TAB.EXPERIMENT]: 'Compare prompts',
     [TAB.AB]: 'Compare models',
+    [TAB.SCENES]: 'Compare scenes',
     [TAB.SETTINGS]: 'Settings',
 });
 
@@ -173,8 +175,8 @@ export const TAB_META = Object.freeze({
     }),
     [TAB.DIFF]: Object.freeze({
         icon: 'fa-code-compare',
-        hint: 'What changed between two runs',
-        blurb: 'Shows what changed between two runs of the same test case, section by section, with the token cost of each change.',
+        hint: 'Two runs, or two setups, side by side',
+        blurb: 'Shows what changed between two runs of the same test case, section by section, with the token cost of each change. It can also build one test case under two setups, such as two presets, and compare those.',
         sends: false,
     }),
     [TAB.EXPERIMENT]: Object.freeze({
@@ -187,6 +189,12 @@ export const TAB_META = Object.freeze({
         icon: 'fa-scale-balanced',
         hint: 'One prompt, two connections',
         blurb: 'Sends a saved prompt to two connections and shows both replies next to each other. Nothing is added to any chat.',
+        sends: true,
+    }),
+    [TAB.SCENES]: Object.freeze({
+        icon: 'fa-masks-theater',
+        hint: 'One scene, several presets',
+        blurb: 'Plays the same scene under each preset you pick, up to four exchanges deep, and puts what each one wrote side by side. Nothing is added to any chat.',
         sends: true,
     }),
     [TAB.SETTINGS]: Object.freeze({
@@ -204,7 +212,7 @@ export const TAB_META = Object.freeze({
 export const TAB_GROUPS = Object.freeze([
     Object.freeze({ id: 'build', label: 'Build', tabs: Object.freeze([TAB.CASES, TAB.PRESETS, TAB.PROMPTS]) }),
     Object.freeze({ id: 'run', label: 'Run', tabs: Object.freeze([TAB.RUN]) }),
-    Object.freeze({ id: 'compare', label: 'Compare', tabs: Object.freeze([TAB.DIFF, TAB.EXPERIMENT, TAB.AB]) }),
+    Object.freeze({ id: 'compare', label: 'Compare', tabs: Object.freeze([TAB.DIFF, TAB.EXPERIMENT, TAB.AB, TAB.SCENES]) }),
     Object.freeze({ id: 'setup', label: 'Set up', tabs: Object.freeze([TAB.SETTINGS]) }),
 ]);
 

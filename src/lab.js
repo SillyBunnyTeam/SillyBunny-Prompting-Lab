@@ -194,6 +194,76 @@ export async function runSuite(suite, {
     return result;
 }
 
+/* ---------------------------------------------------- setup comparison */
+
+/** Names a setup by what it changes, for the run list to show. */
+export function describeSetup(setup = {}) {
+    return [setup.presetName, setup.profileName].filter(Boolean).join(' · ') || 'As the test case is saved';
+}
+
+/**
+ * One test case as it would run under a different preset or connection
+ * profile. The scenario itself — character, persona, message, checks — is left
+ * alone, so the setup is the only difference between two of these.
+ *
+ * A preset replaces the pin of its own kind only: a Text Completion case pins
+ * five presets, and swapping the sampler must not drop the instruct template.
+ */
+export function caseWithSetup(testCase, setup = {}) {
+    const pins = { ...testCase?.pins };
+    if (setup.presetName) {
+        const apiId = setup.presetApiId ?? '';
+        pins.presets = [
+            ...(pins.presets ?? []).filter(ref => ref?.apiId !== apiId),
+            { apiId, name: setup.presetName },
+        ];
+    }
+    if (setup.connectionProfileId) {
+        pins.connectionProfileId = setup.connectionProfileId;
+    }
+    return { ...testCase, pins, variantLabel: describeSetup(setup) };
+}
+
+/**
+ * One row per setup: what it was, what it cost, and how its checks went.
+ *
+ * The first setup that produced a prompt is the point of comparison, so its own
+ * difference is null rather than zero: there is nothing for it to differ from.
+ */
+export function summarizeSetups(runs = []) {
+    const usable = (runs ?? []).filter(Boolean);
+    const base = usable.find(run => run?.capture?.sections?.length) ?? null;
+    const baseTokens = Number(base?.capture?.tokenTable?.total ?? 0);
+    return usable.map((run) => {
+        const results = run.assertionResults ?? [];
+        const built = Boolean(run.capture?.sections?.length);
+        const tokens = Number(run.capture?.tokenTable?.total ?? 0);
+        return {
+            runId: run.id,
+            label: run.variantLabel || run.caseName || 'This setup',
+            status: run.status,
+            built,
+            tokens,
+            delta: built && run !== base ? tokens - baseTokens : null,
+            passed: results.filter(result => result?.pass === true).length,
+            failed: results.filter(result => result?.pass === false).length,
+            unchecked: results.filter(result => result?.pass === null).length,
+            error: run.error?.message ?? '',
+        };
+    });
+}
+
+/**
+ * Builds one test case once per setup. Every run is stored against the case it
+ * came from, so the comparison tab can put any two of them side by side.
+ */
+export async function runSetups(suite, testCase, setups, options = {}) {
+    return runSuite(suite, {
+        ...options,
+        cases: (setups ?? []).map(setup => caseWithSetup(testCase, setup)),
+    });
+}
+
 /** Marks a run as the baseline for its case. */
 export async function promoteBaseline(suite, caseId, runId) {
     const next = {

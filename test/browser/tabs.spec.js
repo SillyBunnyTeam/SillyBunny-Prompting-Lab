@@ -297,6 +297,16 @@ test('the model comparison tab warns that it spends tokens', async ({ page }) =>
     await expect(panel).toContainText('does not change');
 });
 
+test('the scene comparison tab states its cost and refuses to send until it can', async ({ page }) => {
+    const panel = await openTab(page, 'scenes');
+    await expect(panel).toContainText('uses tokens');
+    await expect(panel).toContainText('Nothing is added to any chat');
+    // Nothing is chosen yet, so the estimate asks for the missing pieces and
+    // the button that spends money stays disabled.
+    await expect(panel).toContainText('Choose at least two presets');
+    await expect(panel.locator('button', { hasText: 'Play the scene' })).toBeDisabled();
+});
+
 test('the settings tab exposes retention, caching depth and transfer', async ({ page }) => {
     const panel = await openTab(page, 'settings');
     await expect(panel).toContainText('Runs kept for each test case');
@@ -326,7 +336,7 @@ test('an out-of-range setting is corrected rather than accepted', async ({ page 
 
 test('every tab keeps its content inside the panel on a narrow screen', async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 780 });
-    for (const tab of ['cases', 'presets', 'prompts', 'run', 'diff', 'experiment', 'ab', 'settings']) {
+    for (const tab of ['cases', 'presets', 'prompts', 'run', 'diff', 'experiment', 'ab', 'scenes', 'settings']) {
         await openTab(page, tab);
         const overflows = await page.evaluate(
             () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
@@ -348,7 +358,7 @@ test('every tab is reachable and operable with the keyboard alone', async ({ pag
     await page.waitForFunction(() => globalThis.__ready === true);
     await page.locator('#sbpl-menu-item').click();
     await page.locator('#sbpl-tab-cases').focus();
-    for (const expected of ['presets', 'prompts', 'run', 'diff', 'experiment', 'ab', 'settings']) {
+    for (const expected of ['presets', 'prompts', 'run', 'diff', 'experiment', 'ab', 'scenes', 'settings']) {
         await page.keyboard.press('ArrowRight');
         await expect(page.locator(`#sbpl-tab-${expected}`)).toHaveAttribute('aria-selected', 'true');
         await expect(page.locator(`#sbpl-tab-${expected}`)).toBeFocused();

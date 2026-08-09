@@ -222,6 +222,7 @@ export async function saveRun(run) {
         startedAt: normalized.startedAt,
         status: normalized.status,
         suiteRunId: normalized.suiteRunId,
+        variantLabel: normalized.variantLabel,
     });
     await writeIndex(key, without);
     return normalized;

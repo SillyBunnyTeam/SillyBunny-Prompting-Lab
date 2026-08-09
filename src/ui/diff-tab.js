@@ -1,15 +1,21 @@
-import { SECTION_LABEL, STATUS_LABEL } from '../constants.js';
+import { SECTION_LABEL, STATUS, STATUS_LABEL } from '../constants.js';
 import { button, element, emptyState, errorMessage, formatTokens, replace, statusRegion } from '../dom.js';
 import { collapseUnchanged, diffSection, isUnchanged, PART } from '../diff.js';
+import { loadHost } from '../host.js';
 import { macroConfigDiffers } from '../integrations/macroenhanced.js';
 import * as lab from '../lab.js';
+import { CC_API_ID, isSupportedApiId, labelForApiId, PRESET_API_IDS } from '../presets.js';
 import { getSettings, updateSettings } from '../settings.js';
 import * as storage from '../storage.js';
 
 /**
  * Compares two runs of the same test case and shows what changed, section by
- * section, with the token cost of each change.
+ * section, with the token cost of each change. The two runs can be two moments
+ * in time, or the same test case built twice under two setups.
  */
+const LETTERS = 'ABCDEF';
+const MAX_SETUPS = LETTERS.length;
+
 export function createDiffTab() {
     let root = null;
     let suiteSelect = null;
@@ -19,6 +25,12 @@ export function createDiffTab() {
     let rawToggle = null;
     let output = null;
     let status = null;
+    let setupHost = null;
+    let rowsHost = null;
+    let summaryHost = null;
+    let addSetupButton = null;
+    let setupRunButton = null;
+    let setups = [];
 
     let suites = [];
     let activeSuite = null;
@@ -26,6 +38,7 @@ export function createDiffTab() {
     let activeCase = null;
     let runIndex = [];
     let renderSeq = 0;
+    let running = false;
 
     async function reload() {
         suites = await storage.listSuites();
@@ -50,18 +63,23 @@ export function createDiffTab() {
         if (activeCase) {
             caseSelect.value = activeCase.id;
         }
+        renderSetups();
         await reloadRuns();
     }
 
-    async function reloadRuns() {
+    /**
+     * @param {{base?: string, compare?: string}} [preferred] runs to select
+     *   instead of whatever was chosen before, used after a setup comparison.
+     */
+    async function reloadRuns({ base = '', compare = '' } = {}) {
         // A refresh must not silently swap a pair of runs the user chose.
-        const previousBase = baseSelect.value;
-        const previousCompare = compareSelect.value;
+        const previousBase = base || baseSelect.value;
+        const previousCompare = compare || compareSelect.value;
         runIndex = activeCase ? await storage.listRuns(activeCase.id) : [];
         const has = id => runIndex.some(entry => entry.id === id);
         const baselineId = activeSuite?.baselines?.[activeCase?.id ?? ''] ?? '';
         const options = runIndex.map(entry => element('option', {
-            text: `${describeWhen(entry.startedAt)} · ${STATUS_LABEL[entry.status] ?? entry.status}${entry.id === baselineId ? ' · baseline' : ''}`,
+            text: `${entry.variantLabel ? `${entry.variantLabel} · ` : ''}${describeWhen(entry.startedAt)} · ${STATUS_LABEL[entry.status] ?? entry.status}${entry.id === baselineId ? ' · baseline' : ''}`,
             attributes: { value: entry.id },
         }));
         replace(baseSelect, ...options.map(node => node.cloneNode(true)));
@@ -108,7 +126,7 @@ export function createDiffTab() {
         if (runIndex.length < 2) {
             output.append(emptyState(
                 'Only one run so far.',
-                'Comparing needs two runs of the same test case. Run it again after changing something.',
+                'Comparing needs two runs of the same test case. Run it again after changing something, or build it under two setups above.',
             ));
             return;
         }
@@ -265,6 +283,264 @@ export function createDiffTab() {
         return wrapper;
     }
 
+    /* ------------------------------------------------- setup comparison */
+
+    /**
+     * The preset kind a case already pins, used as the starting choice so a
+     * swap replaces like with like. Each setup can pick a different kind: a
+     * Text Completion case pins five presets, and a comparison may want to move
+     * the instruct template rather than the sampler.
+     */
+    function presetKindFor(testCase) {
+        const pinned = (testCase?.pins?.presets ?? []).find(ref => ref?.name && isSupportedApiId(ref.apiId));
+        return pinned?.apiId ?? CC_API_ID;
+    }
+
+    /** One row of the setup list: which preset of which kind, and which connection. */
+    function setupRow(options, defaults = {}) {
+        const kindSelect = element('select', {
+            className: 'text_pole sbpl-select',
+            attributes: { 'aria-label': 'Preset kind to swap' },
+        });
+        replace(kindSelect, ...PRESET_API_IDS.map(id => element('option', {
+            text: labelForApiId(id),
+            attributes: { value: id },
+        })));
+        kindSelect.value = defaults.presetApiId ?? CC_API_ID;
+
+        const presetSelect = element('select', {
+            className: 'text_pole sbpl-select',
+            attributes: { 'aria-label': 'Preset for this setup' },
+        });
+        const fillPresets = (selected = '') => {
+            replace(presetSelect, element('option', {
+                text: 'Preset the test case pins',
+                attributes: { value: '' },
+            }), ...(options.presets[kindSelect.value] ?? []).map(name => element('option', {
+                text: name,
+                attributes: { value: name },
+            })));
+            presetSelect.value = selected;
+        };
+        fillPresets(defaults.presetName ?? '');
+        kindSelect.addEventListener('change', () => fillPresets(''));
+
+        const profileSelect = element('select', {
+            className: 'text_pole sbpl-select',
+            attributes: { 'aria-label': 'Connection for this setup' },
+        });
+        replace(profileSelect, element('option', {
+            text: 'Connection the test case pins',
+            attributes: { value: '' },
+        }), ...options.profiles.map(profile => element('option', {
+            text: profile.name,
+            attributes: { value: profile.id },
+        })));
+        profileSelect.value = defaults.connectionProfileId ?? '';
+
+        const node = element('div', { className: 'sbpl-controls' });
+        const remove = button('Remove', () => {
+            setups = setups.filter(entry => entry.node !== node);
+            node.remove();
+            renumberSetups();
+        }, { className: 'menu_button sbpl-button sbpl-button-quiet' });
+        const position = element('span', { className: 'sbpl-field-label' });
+        node.append(position, kindSelect, presetSelect, profileSelect, remove);
+
+        return {
+            node,
+            position,
+            remove,
+            read: () => ({
+                presetApiId: kindSelect.value,
+                presetName: presetSelect.value,
+                connectionProfileId: profileSelect.value,
+                profileName: options.profiles.find(profile => profile.id === profileSelect.value)?.name ?? '',
+            }),
+        };
+    }
+
+    /** Setups are read as a list, so their labels have to follow their order. */
+    function renumberSetups() {
+        setups.forEach((entry, index) => {
+            entry.position.textContent = `Setup ${LETTERS[index] ?? index + 1}`;
+            // Two is the fewest that can be compared at all.
+            entry.remove.hidden = setups.length <= 2;
+        });
+        updateSetupControls();
+    }
+
+    function addSetup(options, defaults = {}) {
+        if (setups.length >= MAX_SETUPS) {
+            return;
+        }
+        const entry = setupRow(options, defaults);
+        setups.push(entry);
+        rowsHost.append(entry.node);
+        renumberSetups();
+    }
+
+    function renderSetups() {
+        replace(setupHost);
+        replace(summaryHost);
+        setups = [];
+        if (!activeCase) {
+            return;
+        }
+        let options;
+        try {
+            options = lab.readAvailableOptions();
+        } catch (error) {
+            setupHost.append(element('p', {
+                className: 'sbpl-settings-note',
+                text: `The presets and connections could not be read: ${errorMessage(error)}`,
+            }));
+            return;
+        }
+
+        const apiId = presetKindFor(activeCase);
+        const names = options.presets[apiId] ?? [];
+        const pinnedName = (activeCase.pins?.presets ?? []).find(ref => ref?.apiId === apiId)?.name ?? '';
+
+        rowsHost = element('div', { className: 'sbpl-setup-rows' });
+        addSetupButton = button('Add a setup', () => addSetup(options), {
+            className: 'menu_button sbpl-button sbpl-button-quiet',
+        });
+        const actions = element('div', { className: 'sbpl-controls' });
+        actions.append(addSetupButton, setupRunButton);
+
+        setupHost.append(
+            element('p', {
+                className: 'sbpl-summary',
+                text: 'Build this test case under several setups and compare the prompts they produce.',
+            }),
+            element('p', {
+                className: 'sbpl-settings-note',
+                text: 'Only the preset and the connection differ between setups; the character, persona, example message and checks stay as the test case has them. Nothing is sent, so this costs no tokens.',
+            }),
+            rowsHost,
+            actions,
+        );
+
+        addSetup(options, { presetApiId: apiId, presetName: names.includes(pinnedName) ? pinnedName : '' });
+        addSetup(options, { presetApiId: apiId, presetName: names.find(name => name !== pinnedName) ?? '' });
+    }
+
+    function updateSetupControls() {
+        if (addSetupButton) {
+            addSetupButton.disabled = running || setups.length >= MAX_SETUPS;
+        }
+        setupRunButton.disabled = running || !activeSuite || !activeCase || setups.length < 2;
+        setupRunButton.textContent = `Build this test case under ${setups.length} setups`;
+        suiteSelect.disabled = running;
+        caseSelect.disabled = running;
+        for (const entry of setups) {
+            entry.node.querySelectorAll('select, button').forEach((control) => {
+                control.disabled = running;
+            });
+        }
+    }
+
+    /** What each setup produced, so three or more can be read at a glance. */
+    function renderSetupSummary(runs) {
+        replace(summaryHost);
+        const rows = lab.summarizeSetups(runs);
+        if (rows.length < 2) {
+            return;
+        }
+        summaryHost.append(element('p', { className: 'sbpl-summary', text: 'What each setup produced' }));
+        const scroller = element('div', { className: 'sbpl-scroll-x' });
+        const table = element('table', { className: 'sbpl-table' });
+        const head = element('thead');
+        const headRow = element('tr');
+        for (const label of ['Setup', 'Result', 'Tokens', 'Against the first', 'Checks']) {
+            headRow.append(element('th', { text: label, attributes: { scope: 'col' } }));
+        }
+        head.append(headRow);
+        const body = element('tbody');
+        for (const row of rows) {
+            const tr = element('tr');
+            tr.append(element('td', { text: row.label }));
+            const statusCell = element('td');
+            statusCell.append(element('span', {
+                className: `sbpl-chip sbpl-chip-${row.status}`,
+                text: STATUS_LABEL[row.status] ?? row.status,
+            }));
+            tr.append(statusCell);
+            tr.append(element('td', {
+                className: 'sbpl-number',
+                text: row.built ? formatTokens(row.tokens) : '—',
+            }));
+            tr.append(element('td', {
+                className: 'sbpl-number',
+                text: row.delta === null
+                    ? '—'
+                    : (row.delta === 0 ? 'same' : `${row.delta > 0 ? '+' : '−'}${formatTokens(Math.abs(row.delta))}`),
+            }));
+            tr.append(element('td', { text: describeChecks(row) }));
+            body.append(tr);
+        }
+        table.append(head, body);
+        scroller.append(table);
+        summaryHost.append(scroller);
+    }
+
+    function describeChecks(row) {
+        if (row.error) {
+            return row.error;
+        }
+        const parts = [];
+        if (row.passed) {
+            parts.push(`${row.passed} passed`);
+        }
+        if (row.failed) {
+            parts.push(`${row.failed} failed`);
+        }
+        if (row.unchecked) {
+            parts.push(`${row.unchecked} unchecked`);
+        }
+        return parts.join(', ') || 'No checks';
+    }
+
+    async function compareSetups() {
+        if (running || !activeSuite || !activeCase || setups.length < 2) {
+            return;
+        }
+        running = true;
+        updateSetupControls();
+        replace(summaryHost);
+        status.textContent = `Building this test case under ${setups.length} setups. Your character, persona, preset and connection change while it runs, and are put back afterwards.`;
+        try {
+            const host = await loadHost();
+            const result = await lab.runSetups(
+                activeSuite,
+                activeCase,
+                setups.map(entry => entry.read()),
+                { host },
+            );
+            const [first, second] = result.runs;
+            await reloadRuns({ base: first?.id ?? '', compare: second?.id ?? '' });
+            renderSetupSummary(result.runs);
+
+            const failed = result.runs.filter(run => run?.status === STATUS.ERROR);
+            const reason = failed[0]?.error?.message ?? 'the run did not finish.';
+            if (failed.length === result.runs.length) {
+                status.textContent = `No setup could be built: ${reason}`;
+            } else if (failed.length) {
+                status.textContent = `${failed.length} of ${result.runs.length} setups could not be built: ${reason}`;
+            } else if (result.restoreProblems?.length) {
+                status.textContent = `Every setup was built, but your own settings could not be fully put back: ${result.restoreProblems.join('; ')}. Check your character, persona, preset and connection profile.`;
+            } else {
+                status.textContent = `All ${result.runs.length} setups were built. Your settings have been put back.`;
+            }
+        } catch (error) {
+            status.textContent = `The setups could not be compared: ${errorMessage(error)}`;
+        } finally {
+            running = false;
+            updateSetupControls();
+        }
+    }
+
     function build() {
         root = element('div', { className: 'sbpl-diff-tab' });
         const controls = element('div', { className: 'sbpl-controls' });
@@ -316,9 +592,16 @@ export function createDiffTab() {
             promote,
         );
 
+        setupRunButton = button('Build this test case under 2 setups', () => { void compareSetups(); }, {
+            className: 'menu_button sbpl-button',
+            title: 'Builds the same test case once per setup, then compares the prompts',
+        });
+        setupHost = element('div', { className: 'sbpl-setups' });
+        summaryHost = element('div', { className: 'sbpl-setup-summary' });
+
         status = statusRegion('');
         output = element('div', { className: 'sbpl-diff-output' });
-        root.append(controls, runControls, rawLabel, status, output);
+        root.append(controls, setupHost, status, summaryHost, runControls, rawLabel, output);
         return root;
     }
 
@@ -333,7 +616,11 @@ export function createDiffTab() {
             return root;
         },
         refresh() {
-            void reload().catch(() => {});
+            // Rebuilding the setup choosers mid-run would drop the pair being
+            // built and re-enable the button while the runner is still going.
+            if (!running) {
+                void reload().catch(() => {});
+            }
         },
         dispose() {
             root?.remove();

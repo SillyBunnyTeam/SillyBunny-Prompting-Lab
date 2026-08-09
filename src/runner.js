@@ -170,6 +170,8 @@ export async function runCase(testCase, {
         suiteRunId,
         caseId: testCase?.id ?? '',
         caseName: testCase?.name ?? '',
+        // A case handed in with a setup applied says which setup it is.
+        variantLabel: testCase?.variantLabel ?? '',
         startedAt,
     };
 
