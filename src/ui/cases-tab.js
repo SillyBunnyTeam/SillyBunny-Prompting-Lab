@@ -269,7 +269,7 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
         nameInput.addEventListener('input', () => { editing.name = nameInput.value; });
 
         const characterPicker = createCharacterPicker({ label: 'Character' });
-        characterPicker.setCharacters(options.characters);
+        characterPicker.setOptions(options.characters.map(item => ({ value: item.avatar, name: item.name })));
         characterPicker.setValue(editing.pins.characterAvatar);
         characterPicker.input.addEventListener('change', () => {
             editing.pins.characterAvatar = characterPicker.value;

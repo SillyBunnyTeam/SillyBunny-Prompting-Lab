@@ -8,6 +8,7 @@ installStubContext();
 const {
     buildAnalysisMessages,
     buildExperimentMessages,
+    greetingChoices,
     readCharacterCard,
     requestAnalysis,
     runExperiment,
@@ -172,4 +173,68 @@ test('requestAnalysis sends one request under the chosen profile', async () => {
     assert.equal(calls.length, 1);
     assert.equal(calls[0].profileId, 'p2');
     assert.equal(calls[0].maxTokens, 512);
+});
+
+test('a card offers its first message and every alternate greeting', () => {
+    const context = {
+        characters: [{
+            avatar: 'seraphina.png',
+            name: 'Seraphina',
+            first_mes: 'She looks up from the bar.',
+            data: { alternate_greetings: ['The door swings shut.', '  ', 'She is already waiting.'] },
+        }],
+    };
+    const card = readCharacterCard('seraphina.png', context);
+    const choices = greetingChoices(card);
+
+    assert.deepEqual(choices.map(choice => choice.label), [
+        'First message', 'Alternate greeting 1', 'Alternate greeting 2',
+    ]);
+    assert.deepEqual(choices.map(choice => choice.text), [
+        'She looks up from the bar.', 'The door swings shut.', 'She is already waiting.',
+    ]);
+    assert.equal(choices[0].snippet, 'She looks up from the bar.');
+});
+
+test('a card with nothing to say offers no openings', () => {
+    const context = { characters: [{ avatar: 'blank.png', name: 'Blank', data: {} }] };
+    assert.deepEqual(greetingChoices(readCharacterCard('blank.png', context)), []);
+    assert.deepEqual(greetingChoices(null), []);
+});
+
+test('a long greeting is shortened for the menu but kept whole for the request', () => {
+    const long = `${'word '.repeat(40)}end`;
+    const context = { characters: [{ avatar: 'a.png', name: 'A', first_mes: long, data: {} }] };
+    const [choice] = greetingChoices(readCharacterCard('a.png', context));
+    assert.ok(choice.snippet.length <= 60, 'the menu line stays readable');
+    assert.match(choice.snippet, /…$/);
+    assert.equal(choice.text, long);
+});
+
+test('the chosen greeting is what opens both requests', () => {
+    const character = {
+        name: 'Seraphina',
+        description: 'A knight.',
+        personality: '',
+        scenario: '',
+        firstMessage: 'She looks up from the bar.',
+        greetings: ['She looks up from the bar.', 'She is already waiting.'],
+    };
+    const chosen = buildExperimentMessages({
+        prompt: 'Be brief.',
+        character,
+        scenario: 'Hello.',
+        greeting: 'She is already waiting.',
+    });
+    assert.deepEqual(
+        chosen.filter(message => message.role === 'assistant').map(message => message.content),
+        ['She is already waiting.'],
+    );
+
+    // Nothing chosen means the card's own first message, as it always was.
+    const fallback = buildExperimentMessages({ prompt: 'Be brief.', character, scenario: 'Hello.' });
+    assert.deepEqual(
+        fallback.filter(message => message.role === 'assistant').map(message => message.content),
+        ['She looks up from the bar.'],
+    );
 });

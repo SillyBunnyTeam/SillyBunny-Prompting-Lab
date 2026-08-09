@@ -388,6 +388,53 @@ test('the scene comparison tab states its cost and refuses to send until it can'
     await expect(panel.locator('button', { hasText: 'Play the scene' })).toBeDisabled();
 });
 
+test('the scene tab offers every greeting a card carries and previews the chosen one', async ({ page }) => {
+    const panel = await openTab(page, 'scenes');
+    await pickCharacter(panel, 'Seraphina');
+
+    const opening = panel.getByLabel('Which greeting opens the scene');
+    // No opening, the first message, and both alternates.
+    await expect(opening.locator('option')).toHaveCount(4);
+    await expect(opening.locator('option').first()).toContainText('No opening');
+    await expect(opening.locator('option').nth(1)).toContainText('First message');
+    await expect(opening.locator('option').nth(2)).toContainText('Alternate greeting 1');
+
+    const preview = panel.locator('.sbpl-preview');
+    await expect(preview).toContainText('She looks up from the bar.');
+    await opening.selectOption('1');
+    await expect(preview).toContainText('The door swings shut behind you.');
+    await expect(preview).not.toContainText('She looks up from the bar.');
+
+    // Turning the opening off leaves the scene starting at your own first turn.
+    await opening.selectOption('');
+    await expect(preview).not.toContainText('The door swings shut behind you.');
+});
+
+test('the scene preview shows both faces and follows what is typed', async ({ page }) => {
+    const panel = await openTab(page, 'scenes');
+    await pickCharacter(panel, 'Seraphina');
+    const preview = panel.locator('.sbpl-preview');
+
+    // The character opens, the persona answers: one picture each.
+    await expect(preview.locator('img.sbpl-preview-avatar')).toHaveCount(1);
+    await panel.getByRole('textbox', { name: 'Turn 1' }).fill('I push open the door.');
+    await expect(preview).toContainText('I push open the door.');
+    await expect(preview.locator('img.sbpl-preview-avatar')).toHaveCount(2);
+    await expect(preview).toContainText('Me');
+});
+
+test('the scene tab can be run as a different persona', async ({ page }) => {
+    const panel = await openTab(page, 'scenes');
+    await pickCharacter(panel, 'Seraphina');
+    await panel.getByRole('textbox', { name: 'Turn 1' }).fill('I push open the door.');
+
+    const persona = panel.locator('.sbpl-picker').nth(1);
+    await persona.locator('summary').click();
+    await persona.getByRole('button', { name: 'Kris', exact: true }).click();
+    await expect(persona.locator('summary')).toContainText('Kris');
+    await expect(panel.locator('.sbpl-preview')).toContainText('Kris');
+});
+
 test('the settings tab exposes retention, caching depth and transfer', async ({ page }) => {
     const panel = await openTab(page, 'settings');
     await expect(panel).toContainText('Runs kept for each test case');

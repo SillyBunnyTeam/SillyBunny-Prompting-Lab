@@ -142,7 +142,15 @@
             characterId: 0,
             characters: [
                 { avatar: 'tester.png', name: 'Tester', data: { extensions: {} } },
-                { avatar: 'seraphina.png', name: 'Seraphina', data: { extensions: {} } },
+                {
+                    avatar: 'seraphina.png',
+                    name: 'Seraphina',
+                    first_mes: 'She looks up from the bar.',
+                    data: {
+                        extensions: {},
+                        alternate_greetings: ['The door swings shut behind you.', 'She is already waiting.'],
+                    },
+                },
             ],
             chat: [],
             chatMetadata: {},
@@ -178,7 +186,9 @@
                 sendRequest: async (profileId) => `reply from ${profileId}`,
             },
         };
-        context.powerUserSettings.personas = { 'me.png': 'Me' };
+        context.powerUserSettings.personas = { 'me.png': 'Me', 'kris.png': 'Kris' };
+        context.userAvatar = 'me.png';
+        context.name1 = 'Me';
         context.extensionSettings.connectionManager = {
             profiles: [
                 { id: 'p1', name: 'Local', mode: 'tc', model: 'llama' },

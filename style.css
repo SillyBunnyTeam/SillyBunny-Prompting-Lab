@@ -1094,6 +1094,74 @@
     margin: 0.4em 0 0;
 }
 
+/* The scene as it will be sent, read as a conversation before it is. */
+.sbpl-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4em;
+    min-width: 0;
+    margin: 0.6em 0;
+}
+
+.sbpl-preview:empty {
+    display: none;
+}
+
+.sbpl-preview-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6em;
+    padding: 0.7em 0.8em;
+    border: 1px solid var(--sbpl-line, var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4)));
+    border-radius: 0.5em;
+    background-color: var(--black30a, rgba(0, 0, 0, 0.15));
+}
+
+.sbpl-preview-line {
+    display: flex;
+    gap: 0.6em;
+    align-items: flex-start;
+    min-width: 0;
+}
+
+.sbpl-preview-avatar {
+    width: 2.2em;
+    height: 2.2em;
+    flex: 0 0 2.2em;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
+.sbpl-preview-copy {
+    min-width: 0;
+}
+
+.sbpl-preview-who {
+    display: flex;
+    gap: 0.5em;
+    align-items: baseline;
+    margin: 0 0 0.15em;
+    font-weight: 600;
+}
+
+.sbpl-preview-note {
+    font-size: calc(var(--mainFontSize, 1rem) * 0.78);
+    font-weight: 400;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    opacity: 0.55;
+}
+
+/* The words as written, line breaks and all, but never a wall of text. */
+.sbpl-preview-text {
+    margin: 0;
+    max-height: 9em;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 /* A face beside a name in the lists, at reading size. */
 .sbpl-row-avatar {
     width: 1.6em;

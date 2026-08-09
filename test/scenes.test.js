@@ -429,3 +429,66 @@ test('the lines inside a style block are left exactly as written', () => {
     assert.match(broken, /<style>\n\.card \{ color: red;\n\}\n<\/style>/);
     assert.doesNotMatch(broken.slice(0, broken.indexOf('</style>')), /<br>/);
 });
+
+/* ------------------------------------------------------------ the opening */
+
+test('the chosen greeting opens every column, before the first turn', async () => {
+    const harness = makeHarness();
+    const result = await runSceneComparison({
+        ...BASE,
+        ...harness.options,
+        greeting: 'She looks up from the bar.',
+        turns: ['I open the door.'],
+    });
+
+    // Both presets answer the same opening, and it is in the prompt built for
+    // the first turn rather than tacked on afterwards.
+    assert.deepEqual(harness.built, [
+        ['assistant:She looks up from the bar.', 'user:I open the door.'],
+        ['assistant:She looks up from the bar.', 'user:I open the door.'],
+    ]);
+    assert.equal(result.opening, 'She looks up from the bar.');
+    // It is the scene's opening, not a turn: no reply of its own, no timing.
+    assert.deepEqual(result.columns[0].turns.map(turn => turn.index), [1]);
+});
+
+test('a greeting costs no extra request', () => {
+    const withGreeting = estimateScene({ ...BASE, maxTokens: 300 });
+    assert.equal(withGreeting.requests, 4);
+    assert.equal(estimateScene({ ...BASE, maxTokens: 300, greeting: 'Hello.' }).requests, 4);
+});
+
+test('a scene with no greeting starts at the first turn as before', async () => {
+    const harness = makeHarness();
+    const result = await runSceneComparison({ ...BASE, ...harness.options, turns: ['Only this.'], greeting: '   ' });
+    assert.deepEqual(harness.built[0], ['user:Only this.']);
+    assert.equal(result.opening, '');
+});
+
+test('a character with a chat already open says so on every column', async () => {
+    const harness = makeHarness();
+    const context = globalThis.SillyTavern.getContext();
+    context.chat = [{ mes: 'an older conversation' }];
+    try {
+        const result = await runSceneComparison({ ...BASE, ...harness.options, turns: ['One turn.'] });
+        assert.ok(result.columns[0].caveats.includes('existing-chat'));
+        assert.ok(result.columns[1].caveats.includes('existing-chat'));
+    } finally {
+        context.chat = [];
+    }
+});
+
+test('a saved comparison says what the scene opened with', () => {
+    const finished = {
+        opening: 'She looks up from the bar.',
+        columns: [{
+            label: 'Preset 1',
+            error: '',
+            caveats: [],
+            turns: [{ index: 1, userText: 'I open the door.', text: 'She nods.', error: null, promptTokens: 10, durationMs: 1000 }],
+        }],
+    };
+    assert.match(formatScene(finished, { format: 'md' }), /## The scene opened with\n\nShe looks up from the bar\./);
+    assert.match(formatScene(finished, { format: 'txt' }), /THE SCENE OPENED WITH\n\nShe looks up from the bar\./);
+    assert.match(formatScene(finished, { format: 'html' }), /class="opening"[\s\S]*She looks up from the bar\./);
+});

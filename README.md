@@ -180,6 +180,9 @@ connection, with the same character card and the same test message, so the promp
 difference between the two requests. The replies come back side by side. Prompts can be typed in
 directly or loaded from the drafts kept on the Prompts tab.
 
+When the card has more than one greeting, **Opening** chooses which one both requests carry, and a
+preview shows it and your test message with the faces of the character and your persona.
+
 After the replies arrive, an optional analysis can be requested: a model of your choosing is shown
 both prompts and both replies and asked what changed between the prompts and what the replies show.
 The analysis is a reading aid, not a verdict, and it is only fetched when you ask for it.
@@ -195,8 +198,14 @@ to any chat, and the connection you are using does not change.
 ### Compare scenes
 
 Plays the same scene under several presets and shows what each one wrote, side by side. Choose a
-character, a connection, and two to four presets, then write the scene: either the turns you want
-sent, or one opening message and how many exchanges to let it run for.
+character, a persona, a connection, and two to four presets, then write the scene: either the turns
+you want sent, or one opening message and how many exchanges to let it run for.
+
+If the card carries more than one greeting, **Opening** says which one starts the scene, so every
+preset answers the same first message. Cards often have several, and the choice is listed with
+enough of each to tell them apart; **No opening** starts at your own first turn instead. Above the
+button, a preview shows the scene as it will be sent, with the character's and the persona's faces
+beside what each of them says.
 
 Each preset gets its own column. Within a column, the prompt is rebuilt the way SillyBunny would
 with everything said so far already in the chat, sent, and the reply becomes part of the scene
@@ -225,8 +234,12 @@ around it. The file stands on its own and can be opened anywhere.
 
 Before you press the button it says how many requests that will be and roughly how many reply tokens
 they may use. Nothing is added to any chat: the turns are put into the chat in memory only for as
-long as it takes to build the prompt. Your character, preset and connection change while it runs and
-are put back afterwards, including when you stop it or when a reply fails.
+long as it takes to build the prompt. Your character, persona, preset and connection change while it
+runs and are put back afterwards, including when you stop it or when a reply fails.
+
+The character's open chat is part of every prompt built, underneath the opening chosen here. When
+that chat already has messages in it, the results say so; start a new chat in SillyBunny for a scene
+that begins where you think it does.
 
 ### Settings
 

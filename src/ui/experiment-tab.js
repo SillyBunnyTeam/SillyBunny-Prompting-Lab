@@ -1,9 +1,10 @@
 import { listComparableProfiles } from '../ab.js';
 import { button, element, emptyState, errorMessage, field, promptField, replace, statusRegion } from '../dom.js';
-import { readCharacterCard, requestAnalysis, runExperiment } from '../experiment.js';
+import { greetingChoices, readCharacterCard, requestAnalysis, runExperiment } from '../experiment.js';
 import { getContext } from '../host.js';
 import { getSelectedVersion } from '../prompt-drafts.js';
 import { createCharacterPicker } from './character-picker.js';
+import { currentPersona, renderScenePreview } from './scene-preview.js';
 import { getSettings, updateSettings } from '../settings.js';
 import * as storage from '../storage.js';
 
@@ -27,6 +28,12 @@ export function createExperimentTab() {
     let roleSelect = null;
     let characterPicker = null;
     let characterSelect = null;
+    let greetingSelect = null;
+    let greetingHost = null;
+    let greetingChosen = false;
+    let previewHost = null;
+    let card = null;
+    let greetings = [];
     let scenarioTextarea = null;
     let profileSelect = null;
     let tokensInput = null;
@@ -105,8 +112,53 @@ export function createExperimentTab() {
         characters = (getContext()?.characters ?? [])
             .filter(character => character?.avatar)
             .map(character => ({ avatar: character.avatar, name: character.name ?? character.avatar }));
-        characterPicker.setCharacters(characters);
+        characterPicker.setOptions(characters.map(item => ({ value: item.avatar, name: item.name })));
         characterPicker.setValue(characters.some(character => character.avatar === previous) ? previous : '');
+        renderGreetings();
+    }
+
+    /** The openings the chosen card offers, and the one both requests will use. */
+    function renderGreetings() {
+        const previous = greetingSelect.value;
+        card = characterSelect.value ? readCharacterCard(characterSelect.value, getContext()) : null;
+        greetings = greetingChoices(card);
+        replace(
+            greetingSelect,
+            // Named, so that opening with the card's first message is a choice
+            // on screen rather than something that quietly happens.
+            element('option', { text: 'No opening', attributes: { value: '' } }),
+            ...greetings.map(choice => element('option', {
+                text: choice.snippet ? `${choice.label} — ${choice.snippet}` : choice.label,
+                attributes: { value: String(choice.index) },
+            })),
+        );
+        // Until someone picks, a card opens the way it says it does. After
+        // that the choice is theirs and a refresh must not undo it.
+        const stillOffered = previous === '' || greetings.some(choice => String(choice.index) === previous);
+        greetingSelect.value = greetingChosen && stillOffered
+            ? previous
+            : String(greetings[0]?.index ?? '');
+        greetingHost.hidden = greetings.length === 0;
+        renderPreview();
+    }
+
+    function chosenGreeting() {
+        return greetings.find(choice => String(choice.index) === greetingSelect.value)?.text ?? '';
+    }
+
+    /** What both requests will carry, beneath the prompt being tested. */
+    function renderPreview() {
+        const persona = currentPersona(getContext());
+        renderScenePreview(previewHost, {
+            characterAvatar: card?.avatar ?? '',
+            characterName: card?.name ?? '',
+            personaKey: persona.key,
+            personaName: persona.name,
+            lines: [
+                { from: 'character', text: chosenGreeting(), note: 'greeting' },
+                { from: 'persona', text: scenarioTextarea?.value ?? '', note: 'test message' },
+            ],
+        });
     }
 
     function updateControls() {
@@ -148,6 +200,7 @@ export function createExperimentTab() {
                 role: roleSelect.value,
                 character,
                 scenario,
+                greeting: chosenGreeting(),
                 profileId: profileSelect.value,
                 maxTokens: getSettings().abMaxTokens,
                 signal,
@@ -343,11 +396,27 @@ export function createExperimentTab() {
             blankLabel: 'No character card',
         });
         characterSelect = characterPicker.input;
+        characterSelect.addEventListener('change', renderGreetings);
+
+        greetingSelect = element('select', {
+            className: 'text_pole sbpl-select',
+            attributes: { 'aria-label': 'Which greeting both requests carry' },
+        });
+        greetingSelect.addEventListener('change', () => {
+            greetingChosen = true;
+            renderPreview();
+        });
+        greetingHost = field('Opening', greetingSelect, {
+            hint: 'The greeting sent with both prompts. Cards can carry more than one.',
+        });
+        previewHost = element('div', { className: 'sbpl-preview' });
 
         scenarioTextarea = element('textarea', {
             className: 'text_pole sbpl-textarea',
             attributes: { rows: '2', 'aria-label': 'Test message' },
         });
+        // The preview is only useful if it follows what is being typed.
+        scenarioTextarea.addEventListener('input', renderPreview);
 
         profileSelect = element('select', {
             className: 'text_pole sbpl-select',
@@ -393,9 +462,11 @@ export function createExperimentTab() {
                 className: 'sbpl-field-hint',
                 text: 'Adds the character\'s description, personality, scenario, and greeting to both requests.',
             }),
+            greetingHost,
             field('Test message', scenarioTextarea, {
                 hint: 'Sent as the user message in both requests. Left empty, a plain "Hello." is sent.',
             }),
+            previewHost,
             sendControls,
             status,
             output,

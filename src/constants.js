@@ -108,6 +108,7 @@ export const CAVEAT = Object.freeze({
     CACHE_DEPTH_UNKNOWN: 'cache-depth-unknown',
     CACHE_BOUNDARY_PREDICTED: 'cache-boundary-predicted',
     TOKENIZER_FALLBACK: 'tokenizer-fallback',
+    EXISTING_CHAT: 'existing-chat',
 });
 
 export const CAVEAT_TEXT = Object.freeze({
@@ -117,6 +118,7 @@ export const CAVEAT_TEXT = Object.freeze({
     [CAVEAT.CACHE_DEPTH_UNKNOWN]: 'The prompt caching depth is unknown, so cache checks were skipped. Set it in Prompting Lab settings.',
     [CAVEAT.CACHE_BOUNDARY_PREDICTED]: 'Cache boundaries are predictions inferred from the captured prompt. The server does not report the actual boundary; this analysis follows Claude-style caching.',
     [CAVEAT.TOKENIZER_FALLBACK]: 'Token counts are estimates because the tokenizer was unavailable.',
+    [CAVEAT.EXISTING_CHAT]: 'This character already had a chat open, and everything in it was part of the prompt, underneath the opening chosen here. Start a new chat in SillyBunny for a scene that begins where you think it does.',
 });
 
 export const TAB = Object.freeze({

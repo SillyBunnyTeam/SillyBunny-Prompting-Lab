@@ -13,11 +13,15 @@ import { getContext } from '../host.js';
 
 let pickerCount = 0;
 
-/** The host renders avatars from its own thumbnail service when it has one. */
-export function avatarThumbnail(avatar, name = '', className = 'sbpl-picker-avatar') {
+/**
+ * The host renders pictures from its own thumbnail service when it has one.
+ * Characters and personas use the same service under different type names; a
+ * persona's key is its picture file, so both are one call.
+ */
+export function avatarThumbnail(avatar, name = '', className = 'sbpl-picker-avatar', type = 'avatar') {
     let source = '';
     try {
-        source = avatar ? (getContext()?.getThumbnailUrl?.('avatar', avatar) ?? '') : '';
+        source = avatar ? (getContext()?.getThumbnailUrl?.(type, avatar) ?? '') : '';
     } catch {
         source = '';
     }
@@ -46,18 +50,24 @@ function choiceCopy(choice) {
 }
 
 /**
- * @param {{label?: string, blankLabel?: string, includeBlank?: boolean}} options
- * @returns {{node: HTMLElement, input: HTMLInputElement, setCharacters: Function,
+ * @param {{label?: string, blankLabel?: string, includeBlank?: boolean,
+ *   emptyText?: string, missingText?: string, placeholder?: string,
+ *   thumbnailType?: string}} options
+ * @returns {{node: HTMLElement, input: HTMLInputElement, setOptions: Function,
  *   setValue: Function, focus: Function}}
  */
 export function createCharacterPicker({
     label = 'Character',
     blankLabel = 'Leave the character as it is',
     includeBlank = false,
+    emptyText = 'No characters match.',
+    missingText = 'Not installed any more',
+    placeholder = 'Choose a character',
+    thumbnailType = 'avatar',
 } = {}) {
     pickerCount += 1;
     const id = `sbpl-picker-${pickerCount}`;
-    let characters = [];
+    let items = [];
 
     const labelNode = element('span', { className: 'sbpl-field-label', text: label, id: `${id}-label` });
     const details = element('details', { className: 'sbpl-picker' });
@@ -70,7 +80,7 @@ export function createCharacterPicker({
         className: 'text_pole sbpl-picker-search',
         attributes: {
             type: 'search',
-            placeholder: 'Search characters',
+            placeholder: `Search ${label.toLowerCase()}s`,
             'aria-label': `Search ${label.toLowerCase()}s`,
             autocomplete: 'off',
         },
@@ -79,7 +89,7 @@ export function createCharacterPicker({
         className: 'sbpl-picker-options',
         attributes: { role: 'group', 'aria-labelledby': `${id}-label` },
     });
-    const empty = element('p', { className: 'sbpl-picker-empty', text: 'No characters match.' });
+    const empty = element('p', { className: 'sbpl-picker-empty', text: emptyText });
     empty.hidden = true;
     const input = element('input', { attributes: { type: 'hidden' } });
 
@@ -89,23 +99,23 @@ export function createCharacterPicker({
     node.append(labelNode, details, input);
 
     /** What is shown for a value, including one no longer installed. */
-    function choiceFor(avatar) {
-        if (!avatar) {
-            return { avatar: '', name: includeBlank ? blankLabel : 'Choose a character', meta: '' };
+    function choiceFor(value) {
+        if (!value) {
+            return { value: '', name: includeBlank ? blankLabel : placeholder, meta: '' };
         }
-        const found = characters.find(character => character.avatar === avatar);
+        const found = items.find(item => item.value === value);
         return found
-            ? { avatar: found.avatar, name: found.name, meta: '' }
-            : { avatar: '', name: avatar, meta: 'Not installed any more' };
+            ? { value: found.value, name: found.name, meta: '' }
+            : { value: '', name: value, meta: missingText };
     }
 
     function showChoice() {
         const choice = choiceFor(input.value);
         const copy = choiceCopy(choice);
         copy.id = `${id}-value`;
-        summary.replaceChildren(avatarThumbnail(choice.avatar, choice.name), copy);
+        summary.replaceChildren(avatarThumbnail(choice.value, choice.name, 'sbpl-picker-avatar', thumbnailType), copy);
         for (const option of list.querySelectorAll('.sbpl-picker-option')) {
-            option.setAttribute('aria-pressed', String(option.dataset.avatar === input.value));
+            option.setAttribute('aria-pressed', String(option.dataset.value === input.value));
         }
     }
 
@@ -125,9 +135,9 @@ export function createCharacterPicker({
         filterOptions();
     }
 
-    function choose(avatar) {
-        const changed = input.value !== avatar;
-        input.value = avatar;
+    function choose(value) {
+        const changed = input.value !== value;
+        input.value = value;
         showChoice();
         clearSearch();
         details.open = false;
@@ -139,18 +149,21 @@ export function createCharacterPicker({
 
     function renderOptions() {
         const choices = includeBlank
-            ? [{ avatar: '', name: blankLabel, meta: '' }, ...characters.map(toChoice)]
-            : characters.map(toChoice);
+            ? [{ value: '', name: blankLabel, meta: '' }, ...items]
+            : [...items];
         list.replaceChildren(...choices.map((choice) => {
             const option = element('button', {
                 className: 'sbpl-picker-option',
                 attributes: { type: 'button', 'aria-label': choice.name },
             });
-            option.dataset.avatar = choice.avatar;
-            option.dataset.search = `${choice.name} ${choice.avatar}`.toLocaleLowerCase();
-            option.append(avatarThumbnail(choice.avatar, choice.name), choiceCopy(choice));
+            option.dataset.value = choice.value;
+            option.dataset.search = `${choice.name} ${choice.value}`.toLocaleLowerCase();
+            option.append(
+                avatarThumbnail(choice.value, choice.name, 'sbpl-picker-avatar', thumbnailType),
+                choiceCopy(choice),
+            );
 
-            const commit = () => choose(choice.avatar);
+            const commit = () => choose(choice.value);
             // Mouse and pen commit on the press: a platform that does not focus
             // buttons on press can lose the click when closing hides the option
             // first. Touch waits for the click, so a scroll that starts on an
@@ -169,10 +182,6 @@ export function createCharacterPicker({
         }));
         showChoice();
         filterOptions();
-    }
-
-    function toChoice(character) {
-        return { avatar: character.avatar, name: character.name || character.avatar, meta: '' };
     }
 
     search.addEventListener('input', filterOptions);
@@ -245,12 +254,15 @@ export function createCharacterPicker({
     return {
         node,
         input,
-        setCharacters(list_) {
-            characters = (list_ ?? []).filter(character => character?.avatar);
+        /** @param {Array<{value: string, name: string}>} next */
+        setOptions(next) {
+            items = (next ?? [])
+                .filter(item => item?.value)
+                .map(item => ({ value: item.value, name: item.name || item.value, meta: '' }));
             renderOptions();
         },
-        setValue(avatar) {
-            input.value = String(avatar ?? '');
+        setValue(value) {
+            input.value = String(value ?? '');
             showChoice();
         },
         get value() {
@@ -260,4 +272,16 @@ export function createCharacterPicker({
             summary.focus({ preventScroll: true });
         },
     };
+}
+
+/** The same control for personas, whose pictures come from their own store. */
+export function createPersonaPicker(options = {}) {
+    return createCharacterPicker({
+        label: 'Persona',
+        placeholder: 'Choose a persona',
+        emptyText: 'No personas match.',
+        missingText: 'Not set up any more',
+        thumbnailType: 'persona',
+        ...options,
+    });
 }

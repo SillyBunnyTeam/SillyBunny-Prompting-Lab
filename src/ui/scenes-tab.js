@@ -3,7 +3,8 @@ import { willCreateChatFile } from '../apply-state.js';
 import { CAVEAT_TEXT } from '../constants.js';
 import { button, element, errorMessage, field, formatTokens, promptField, replace, statusRegion } from '../dom.js';
 import { getContext, loadHost } from '../host.js';
-import { createCharacterPicker } from './character-picker.js';
+import { createCharacterPicker, createPersonaPicker } from './character-picker.js';
+import { readCharacterCard, greetingChoices } from '../experiment.js';
 import * as lab from '../lab.js';
 import { CC_API_ID, labelForApiId, PRESET_API_IDS } from '../presets.js';
 import {
@@ -17,6 +18,7 @@ import {
     SCENE_MODE,
     sceneFileName,
 } from '../scenes.js';
+import { renderScenePreview, currentPersona } from './scene-preview.js';
 import { getSettings, updateSettings } from '../settings.js';
 import { downloadExport } from '../transfer.js';
 
@@ -30,6 +32,12 @@ export function createScenesTab() {
     let root = null;
     let characterPicker = null;
     let characterSelect = null;
+    let personaPicker = null;
+    let personaSelect = null;
+    let greetingSelect = null;
+    let greetingHost = null;
+    let greetingChosen = false;
+    let previewHost = null;
     let profileSelect = null;
     let kindSelect = null;
     let presetHost = null;
@@ -45,7 +53,9 @@ export function createScenesTab() {
     let exportHost = null;
     let output = null;
 
-    let options = { characters: [], presets: {}, profiles: [] };
+    let options = { characters: [], personas: [], presets: {}, profiles: [] };
+    let card = null;
+    let greetings = [];
     let profiles = [];
     let presetChecks = [];
     let turnFields = [];
@@ -81,7 +91,7 @@ export function createScenesTab() {
         }
 
         const previousCharacter = characterSelect.value;
-        characterPicker.setCharacters(options.characters);
+        characterPicker.setOptions(options.characters.map(item => ({ value: item.avatar, name: item.name })));
         characterPicker.setValue(
             options.characters.some(character => character.avatar === previousCharacter)
                 ? previousCharacter
@@ -105,8 +115,75 @@ export function createScenesTab() {
             ? previousProfile
             : (usable[0]?.id ?? '');
 
+        const previousPersona = personaSelect.value;
+        personaPicker.setOptions(options.personas.map(item => ({ value: item.key, name: item.name })));
+        const persona = currentPersona(getContext());
+        personaPicker.setValue(
+            options.personas.some(item => item.key === previousPersona)
+                ? previousPersona
+                : (options.personas.some(item => item.key === persona.key) ? persona.key : ''),
+        );
+
         renderPresetChoices();
+        renderGreetings();
         void checkChatFile();
+    }
+
+    /** The openings the chosen card offers, and the one the scene will use. */
+    function renderGreetings() {
+        const previous = greetingSelect.value;
+        card = characterSelect.value ? readCharacterCard(characterSelect.value, getContext()) : null;
+        greetings = greetingChoices(card);
+        replace(
+            greetingSelect,
+            // Named, so that opening with the card's first message is a choice
+            // on screen rather than something that quietly happens.
+            element('option', { text: 'No opening', attributes: { value: '' } }),
+            ...greetings.map(choice => element('option', {
+                text: choice.snippet ? `${choice.label} — ${choice.snippet}` : choice.label,
+                attributes: { value: String(choice.index) },
+            })),
+        );
+        // Until someone picks, a card opens the way it says it does. After
+        // that the choice is theirs and a refresh must not undo it.
+        const stillOffered = previous === '' || greetings.some(choice => String(choice.index) === previous);
+        greetingSelect.value = greetingChosen && stillOffered
+            ? previous
+            : String(greetings[0]?.index ?? '');
+        // A card with one opening has nothing to choose between; a card with
+        // none has nothing to show at all.
+        greetingHost.hidden = greetings.length === 0;
+        renderPreview();
+    }
+
+    function chosenGreeting() {
+        return greetings.find(choice => String(choice.index) === greetingSelect.value)?.text ?? '';
+    }
+
+    function personaFor() {
+        const chosen = options.personas.find(item => item.key === personaSelect.value);
+        return chosen
+            ? { key: chosen.key, name: chosen.name }
+            : currentPersona(getContext());
+    }
+
+    /** The scene as it will be sent, read as a conversation. */
+    function renderPreview() {
+        const persona = personaFor();
+        renderScenePreview(previewHost, {
+            characterAvatar: card?.avatar ?? characterSelect.value,
+            characterName: card?.name ?? '',
+            personaKey: persona.key,
+            personaName: persona.name,
+            lines: [
+                { from: 'character', text: chosenGreeting(), note: 'opens the scene' },
+                ...writtenTurns().map((text, index) => ({
+                    from: 'persona',
+                    text,
+                    note: currentMode() === SCENE_MODE.SCRIPTED ? `turn ${index + 1}` : 'opening message',
+                })),
+            ],
+        });
     }
 
     /**
@@ -204,6 +281,7 @@ export function createScenesTab() {
             }));
         }
         updateControls();
+        renderPreview();
     }
 
     function addTurnField(value, index) {
@@ -213,7 +291,10 @@ export function createScenesTab() {
             hint: index === 0 ? 'Sent as you, exactly as written, to every preset.' : '',
         });
         entry.textarea.value = value;
-        entry.textarea.addEventListener('input', updateControls);
+        entry.textarea.addEventListener('input', () => {
+            updateControls();
+            renderPreview();
+        });
         turnsHost.append(entry.wrapper);
         turnFields.push(entry);
     }
@@ -287,8 +368,10 @@ export function createScenesTab() {
             presets: chosenPresets(),
             characterAvatar: characterSelect.value,
             characterName: options.characters.find(item => item.avatar === characterSelect.value)?.name ?? '',
+            personaKey: personaSelect.value || null,
             connectionProfileId: profileSelect.value,
             connectionName: profiles.find(profile => profile.id === profileSelect.value)?.name ?? '',
+            greeting: chosenGreeting(),
             mode: currentMode(),
             turns: writtenTurns(),
             exchanges: Number(exchangesInput.value),
@@ -489,9 +572,33 @@ export function createScenesTab() {
         characterPicker = createCharacterPicker({ label: 'Character' });
         characterSelect = characterPicker.input;
         characterSelect.addEventListener('change', () => {
+            renderGreetings();
             updateControls();
             void checkChatFile();
         });
+
+        personaPicker = createPersonaPicker({
+            includeBlank: true,
+            blankLabel: 'Stay on the persona you are using',
+        });
+        personaSelect = personaPicker.input;
+        personaSelect.addEventListener('change', () => {
+            renderPreview();
+            updateControls();
+        });
+
+        greetingSelect = element('select', {
+            className: 'text_pole sbpl-select',
+            attributes: { 'aria-label': 'Which greeting opens the scene' },
+        });
+        greetingSelect.addEventListener('change', () => {
+            greetingChosen = true;
+            renderPreview();
+        });
+        greetingHost = field('Opening', greetingSelect, {
+            hint: 'The greeting every preset answers. Cards can carry more than one.',
+        });
+        previewHost = element('div', { className: 'sbpl-preview' });
         chatFileNote = element('p', { className: 'sbpl-warning-text' });
         chatFileNote.hidden = true;
         profileSelect = element('select', { className: 'text_pole sbpl-select', attributes: { 'aria-label': 'Connection profile' } });
@@ -563,6 +670,8 @@ export function createScenesTab() {
             }),
             characterPicker.node,
             chatFileNote,
+            personaPicker.node,
+            greetingHost,
             field('Connection', profileSelect, { hint: 'Every preset is sent through this same connection.' }),
             field('Preset kind', kindSelect),
             element('p', { className: 'sbpl-field-label', text: `Presets to compare (2 to ${MAX_PRESETS})` }),
@@ -570,6 +679,7 @@ export function createScenesTab() {
             element('p', { className: 'sbpl-field-label', text: 'The scene' }),
             modeHost,
             turnsHost,
+            previewHost,
             field('Reply length', tokensInput, { hint: 'The most tokens each reply may use. Shared with the other comparison tabs.' }),
             estimateLine,
             actions,

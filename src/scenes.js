@@ -1,7 +1,8 @@
 import { sendPrompt } from './ab.js';
 import { applyCase, restoreState, snapshotState } from './apply-state.js';
 import { captureOnce } from './capture.js';
-import { getContext } from './host.js';
+import { CAVEAT } from './constants.js';
+import { ctxOf, getContext } from './host.js';
 
 /**
  * Plays one scene under several presets and puts the replies side by side.
@@ -26,6 +27,9 @@ export const CONTINUE_NUDGE = 'Continue the scene.';
 
 export const MAX_TURNS = 4;
 export const MAX_PRESETS = 4;
+
+/** Said on a column whose character had a saved chat behind the scene. */
+export const CAVEAT_EXISTING_CHAT = CAVEAT.EXISTING_CHAT;
 
 function clampCount(value, max) {
     const number = Math.floor(Number(value));
@@ -182,6 +186,7 @@ const SCENE_PAGE_STYLE = `
     .said { margin: 0 0 0.5rem; padding-left: 0.6rem; border-left: 2px solid rgba(128, 128, 128, 0.5); font-style: italic; opacity: 0.85; white-space: pre-wrap; }
     .reply { overflow-wrap: break-word; }
     .reply img, .reply table { max-width: 100%; }
+    .opening { margin: 0 0 1.5rem; padding: 0 0 0 0.8rem; border-left: 3px solid rgba(128, 128, 128, 0.5); }
     .failed { color: #c0392b; }
 `;
 
@@ -195,6 +200,11 @@ function sceneHtmlPage(result, { characterName, connectionName, savedAt }) {
         connectionName ? `Connection: ${connectionName}` : '',
         savedAt ? `Saved: ${savedAt}` : '',
     ].filter(Boolean).join(' · ');
+
+    const opening = result?.opening
+        ? `<section class="opening"><p class="meta">The scene opened with</p>`
+            + `<div class="reply">${breakReplyLines(sanitizeReplyHtml(result.opening))}</div></section>`
+        : '';
 
     const columns = (result?.columns ?? []).map((column) => {
         const parts = [`<h2>${escapeHtml(column.label)}</h2>`];
@@ -225,6 +235,7 @@ function sceneHtmlPage(result, { characterName, connectionName, savedAt }) {
 ${facts ? `<p class="facts">${escapeHtml(facts)}</p>` : ''}
 <p class="note">Replies are shown as the model wrote them, markup and all. Scripts and anything this
 page would have to fetch are blocked, so a reply cannot do anything when this file is opened.</p>
+${opening}
 <div class="columns">
 ${columns}
 </div>
@@ -264,6 +275,11 @@ export function formatScene(result, {
         }
     }
     lines.push('');
+
+    if (result?.opening) {
+        heading(2, 'The scene opened with');
+        lines.push('', result.opening, '');
+    }
 
     for (const column of result?.columns ?? []) {
         rule();
@@ -312,6 +328,7 @@ export async function runSceneComparison({
     characterAvatar = '',
     personaKey = null,
     connectionProfileId = '',
+    greeting = '',
     mode = SCENE_MODE.SCRIPTED,
     turns = [],
     exchanges = 2,
@@ -330,9 +347,10 @@ export async function runSceneComparison({
 } = {}) {
     const script = sceneTurns({ mode, turns, exchanges });
     const chosen = (presets ?? []).filter(preset => preset?.name).slice(0, MAX_PRESETS);
+    const opening = String(greeting ?? '').trim() ? String(greeting) : '';
     const columns = [];
     if (!script.length || !chosen.length) {
-        return { columns, script, restoreProblems: [], aborted: false };
+        return { columns, script, opening, restoreProblems: [], aborted: false };
     }
 
     // Snapshotted before the first preset is applied and restored no matter how
@@ -370,7 +388,16 @@ export async function runSceneComparison({
                 continue;
             }
 
-            const scene = [];
+            // The chat that was opened is part of every prompt built from here,
+            // and a greeting laid on top of a saved conversation reads as a
+            // second opening. Say so rather than let it pass unnoticed.
+            if ((ctxOf(context)?.chat ?? []).length) {
+                column.caveats.push(CAVEAT_EXISTING_CHAT);
+            }
+
+            // The chosen greeting opens the scene, so every preset answers the
+            // same first message rather than whatever its chat happened to hold.
+            const scene = opening ? [{ role: 'assistant', text: opening }] : [];
             for (const [index, userText] of script.entries()) {
                 if (signal?.aborted) {
                     break;
@@ -451,5 +478,5 @@ export async function runSceneComparison({
         }
     }
 
-    return { columns, script, restoreProblems, aborted: Boolean(signal?.aborted) };
+    return { columns, script, opening, restoreProblems, aborted: Boolean(signal?.aborted) };
 }

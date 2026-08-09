@@ -21,14 +21,41 @@ export function readCharacterCard(avatar, hostRef = getContext) {
     }
     const data = character.data ?? {};
     const fieldOf = (own, stored) => String(own ?? stored ?? '');
+    const firstMessage = fieldOf(character.first_mes, data.first_mes);
+    const alternates = (Array.isArray(data.alternate_greetings) ? data.alternate_greetings : [])
+        .map(text => String(text ?? ''))
+        .filter(text => text.trim());
     return {
         avatar: String(character.avatar),
         name: String(character.name ?? character.avatar),
         description: fieldOf(character.description, data.description),
         personality: fieldOf(character.personality, data.personality),
         scenario: fieldOf(character.scenario, data.scenario),
-        firstMessage: fieldOf(character.first_mes, data.first_mes),
+        firstMessage,
+        // A card can open several ways; the lab lets the user say which.
+        greetings: [firstMessage, ...alternates].filter(text => text.trim()),
     };
+}
+
+/**
+ * The openings a card offers, ready for a menu: the first message, then any
+ * alternate greetings, each with enough of its own text to be told apart.
+ */
+export function greetingChoices(character) {
+    const greetings = character?.greetings ?? [];
+    return greetings.map((text, index) => ({
+        index,
+        text,
+        label: index === 0 ? 'First message' : `Alternate greeting ${index}`,
+        snippet: snippetOf(text),
+    }));
+}
+
+const SNIPPET_LENGTH = 60;
+
+function snippetOf(text) {
+    const flat = String(text ?? '').replace(/\s+/g, ' ').trim();
+    return flat.length > SNIPPET_LENGTH ? `${flat.slice(0, SNIPPET_LENGTH - 1)}…` : flat;
 }
 
 function characterCardText(character) {
@@ -59,6 +86,7 @@ export function buildExperimentMessages({
     role = 'system',
     character = null,
     scenario = '',
+    greeting = null,
 } = {}) {
     const messages = [];
     const content = String(prompt ?? '');
@@ -69,8 +97,10 @@ export function buildExperimentMessages({
     if (card) {
         messages.push({ role: 'system', content: card });
     }
-    if (character?.firstMessage?.trim()) {
-        messages.push({ role: 'assistant', content: character.firstMessage });
+    // The chosen opening, or the card's own first message when none was picked.
+    const opening = typeof greeting === 'string' ? greeting : (character?.firstMessage ?? '');
+    if (opening.trim()) {
+        messages.push({ role: 'assistant', content: opening });
     }
     messages.push({ role: 'user', content: String(scenario ?? '').trim() || 'Hello.' });
     return messages;
@@ -88,6 +118,7 @@ export async function runExperiment({
     role = 'system',
     character = null,
     scenario = '',
+    greeting = null,
     profileId = '',
     hostRef = getContext,
     maxTokens = 300,
@@ -103,6 +134,7 @@ export async function runExperiment({
             role,
             character,
             scenario,
+            greeting,
         });
         const result = await sendPrompt(profileId, messages, { hostRef, maxTokens, signal });
         return { ...variant, messages, ...result };
