@@ -354,7 +354,7 @@ export function createScenesTab() {
 
         tokensInput = element('input', {
             className: 'text_pole sbpl-input',
-            attributes: { type: 'number', min: '16', max: '4096', step: '16', 'aria-label': 'Reply length' },
+            attributes: { type: 'number', min: '16', max: '32000', step: '16', 'aria-label': 'Reply length' },
         });
         tokensInput.value = String(getSettings().abMaxTokens);
         tokensInput.addEventListener('change', () => {

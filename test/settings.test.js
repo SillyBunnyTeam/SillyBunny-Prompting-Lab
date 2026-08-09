@@ -37,7 +37,9 @@ test('normalizeSettings clamps numbers into supported ranges', () => {
     assert.equal(normalizeSettings({ runRetention: 9999 }).runRetention, 200);
     assert.equal(normalizeSettings({ runRetention: 0 }).runRetention, 1);
     assert.equal(normalizeSettings({ abMaxTokens: 1 }).abMaxTokens, 16);
-    assert.equal(normalizeSettings({ abMaxTokens: 999999 }).abMaxTokens, 4096);
+    // High enough for a reasoning model to think and still answer.
+    assert.equal(normalizeSettings({ abMaxTokens: 999999 }).abMaxTokens, 32000);
+    assert.equal(normalizeSettings({ abMaxTokens: 12000 }).abMaxTokens, 12000);
 });
 
 test('normalizeSettings only accepts a whole, non-negative caching depth', () => {

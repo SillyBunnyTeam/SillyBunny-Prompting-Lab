@@ -32,7 +32,10 @@ export function normalizeSettings(value) {
             ? depth
             : null,
         runRetention: integer(source.runRetention, DEFAULT_SETTINGS.runRetention, 1, 200),
-        abMaxTokens: integer(source.abMaxTokens, DEFAULT_SETTINGS.abMaxTokens, 16, 4096),
+        // A reasoning model spends its thinking out of the same allowance as
+        // its reply, and can think for ten thousand tokens before writing a
+        // word, so the ceiling has to leave room for both.
+        abMaxTokens: integer(source.abMaxTokens, DEFAULT_SETTINGS.abMaxTokens, 16, 32000),
         normalizeVolatile: typeof source.normalizeVolatile === 'boolean'
             ? source.normalizeVolatile
             : DEFAULT_SETTINGS.normalizeVolatile,
