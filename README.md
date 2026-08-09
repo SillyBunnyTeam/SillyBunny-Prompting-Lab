@@ -198,6 +198,19 @@ before the next turn is built. Scripted turns mean every preset faces the same w
 shows how a preset carries a scene on its own, and from the second turn each column is answering its
 own replies rather than the same input.
 
+Replies arrive as they are written, so a column fills in while you watch rather than appearing at
+the end, and each turn says how long it took, in seconds or minutes, next to what its prompt cost in
+tokens. That matters with a reasoning model, which can spend a long time thinking before the first
+word appears.
+
+If a connection fails or a reply comes back empty, that column stops there and offers **Try this
+preset again**, which replays the scene for that preset alone from the first turn. The other columns
+are left as they are.
+
+When the run finishes, **Save as Markdown** and **Save as text** write the whole comparison to a
+file: every preset, every turn, what was said and what came back, how long each reply took, and any
+failures, exactly as shown.
+
 Before you press the button it says how many requests that will be and roughly how many reply tokens
 they may use. Nothing is added to any chat: the turns are put into the chat in memory only for as
 long as it takes to build the prompt. Your character, preset and connection change while it runs and

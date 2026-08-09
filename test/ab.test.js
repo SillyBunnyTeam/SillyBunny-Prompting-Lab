@@ -5,7 +5,7 @@ import { installStubContext, makeRunFixture, removeStubContext } from './helpers
 
 installStubContext();
 
-const { compareProfiles, isProfileUsable, listComparableProfiles, sendUnderProfile } = await import('../src/ab.js');
+const { compareProfiles, isProfileUsable, listComparableProfiles, sendPrompt, sendUnderProfile } = await import('../src/ab.js');
 
 test.after(() => removeStubContext());
 
@@ -166,4 +166,57 @@ test('the same profile chosen twice is only asked once', async () => {
 test('asking for no profiles does nothing', async () => {
     const context = contextWith({ profiles: PROFILES, sendRequest: async () => 'x' });
     assert.deepEqual(await compareProfiles(makeRunFixture(), [], { hostRef: context }), []);
+});
+
+test('a watched reply is streamed and handed over as it grows', async () => {
+    let asked = null;
+    const context = contextWith({
+        profiles: PROFILES,
+        sendRequest: async (profileId, prompt, maxTokens, custom) => {
+            asked = custom;
+            // The host hands back a function that starts the generator, and
+            // each chunk carries the whole reply so far.
+            return async function* stream() {
+                yield { text: 'She' };
+                yield { text: 'She looks' };
+                yield { text: 'She looks up.' };
+            };
+        },
+    });
+
+    const seen = [];
+    const result = await sendPrompt('p2', [{ role: 'user', content: 'hi' }], {
+        hostRef: context,
+        onDelta: text => seen.push(text),
+    });
+
+    assert.equal(asked.stream, true);
+    assert.deepEqual(seen, ['She', 'She looks', 'She looks up.']);
+    assert.equal(result.text, 'She looks up.');
+    assert.equal(result.error, null);
+});
+
+test('a connection that cannot stream still shows its reply once', async () => {
+    const context = contextWith({
+        profiles: PROFILES,
+        sendRequest: async () => ({ content: 'all at once' }),
+    });
+    const seen = [];
+    const result = await sendPrompt('p2', 'hi', { hostRef: context, onDelta: text => seen.push(text) });
+
+    assert.deepEqual(seen, ['all at once']);
+    assert.equal(result.text, 'all at once');
+});
+
+test('nothing is streamed unless someone is listening', async () => {
+    let asked = null;
+    const context = contextWith({
+        profiles: PROFILES,
+        sendRequest: async (profileId, prompt, maxTokens, custom) => {
+            asked = custom;
+            return { content: 'a reply' };
+        },
+    });
+    await sendPrompt('p2', 'hi', { hostRef: context });
+    assert.equal(asked.stream, false);
 });

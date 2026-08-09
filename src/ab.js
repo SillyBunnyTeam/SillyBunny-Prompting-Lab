@@ -53,6 +53,7 @@ export async function sendPrompt(profileId, prompt, {
     hostRef = getContext,
     maxTokens = 300,
     signal = null,
+    onDelta = null,
 } = {}) {
     const context = ctxOf(hostRef);
     const service = context?.ConnectionManagerRequestService;
@@ -67,21 +68,51 @@ export async function sendPrompt(profileId, prompt, {
         return { profileId, text: '', error: 'There is nothing to send.' };
     }
 
+    // Streaming is only asked for when someone is watching the reply arrive.
+    // Without a listener the plain request is simpler and just as complete.
+    const wantsStream = typeof onDelta === 'function';
     try {
         const response = await service.sendRequest(profileId, prompt, maxTokens, {
-            stream: false,
+            stream: wantsStream,
             signal,
             extractData: true,
             includePreset: true,
             includeInstruct: true,
         });
-        const text = typeof response === 'string'
-            ? response
-            : String(response?.content ?? response?.text ?? '');
+        const text = wantsStream
+            ? await readStream(response, onDelta)
+            : readReply(response);
         return { profileId, text, error: text ? null : 'The model returned an empty reply.' };
     } catch (error) {
         return { profileId, text: '', error: describeSendError(error) };
     }
+}
+
+function readReply(response) {
+    return typeof response === 'string'
+        ? response
+        : String(response?.content ?? response?.text ?? '');
+}
+
+/**
+ * Reads a streamed reply, handing the caller the text so far every time it
+ * grows. The host yields the whole reply as it stands rather than the new
+ * piece, and hands back a function that starts the generator.
+ */
+async function readStream(response, onDelta) {
+    if (typeof response !== 'function' && typeof response?.[Symbol.asyncIterator] !== 'function') {
+        // A profile that cannot stream still answers; show it in one go.
+        const text = readReply(response);
+        onDelta(text);
+        return text;
+    }
+    const generator = typeof response === 'function' ? response() : response;
+    let text = '';
+    for await (const chunk of generator) {
+        text = typeof chunk === 'string' ? chunk : String(chunk?.text ?? text);
+        onDelta(text);
+    }
+    return text;
 }
 
 /**

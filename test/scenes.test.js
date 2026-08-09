@@ -7,10 +7,13 @@ installStubContext();
 
 const {
     CONTINUE_NUDGE,
+    describeDuration,
     describeEstimate,
     estimateScene,
+    formatScene,
     runSceneComparison,
     SCENE_MODE,
+    sceneFileName,
     sceneTurns,
 } = await import('../src/scenes.js');
 
@@ -192,4 +195,126 @@ test('nothing is applied or sent when there is no scene to play', async () => {
     assert.deepEqual(result.columns, []);
     assert.deepEqual(harness.applied, []);
     assert.equal(harness.restored, 0, 'nothing was changed, so nothing needs putting back');
+});
+
+/* ------------------------------------------------------- live and timing */
+
+test('a turn is recorded before the reply arrives, so it can be watched filling in', async () => {
+    const harness = makeHarness();
+    const seen = [];
+    const result = await runSceneComparison({
+        ...BASE,
+        ...harness.options,
+        presets: [{ apiId: 'openai', name: 'Preset 1' }],
+        turns: ['I open the door.'],
+        live: true,
+        onUpdate: ({ columns, streaming }) => {
+            const turn = columns[0].turns[0];
+            seen.push({
+                text: turn?.text ?? null,
+                waiting: turn?.waiting ?? null,
+                streaming: Boolean(streaming),
+            });
+        },
+        sendFn: async (profileId, prompt, { onDelta }) => {
+            onDelta('Half a');
+            onDelta('Half a sentence.');
+            return { profileId, text: 'Half a sentence.', error: null };
+        },
+    });
+
+    assert.deepEqual(seen, [
+        { text: null, waiting: null, streaming: false },     // the column exists
+        { text: '', waiting: true, streaming: false },       // the turn is waiting
+        { text: 'Half a', waiting: true, streaming: true },
+        { text: 'Half a sentence.', waiting: true, streaming: true },
+        { text: 'Half a sentence.', waiting: false, streaming: false },
+        { text: 'Half a sentence.', waiting: false, streaming: false },
+    ]);
+    assert.equal(result.columns[0].turns[0].waiting, false);
+    assert.ok(Number.isFinite(result.columns[0].turns[0].durationMs), 'a turn records how long it took');
+});
+
+test('nothing is streamed when nobody is watching', async () => {
+    const harness = makeHarness();
+    let asked = null;
+    await runSceneComparison({
+        ...BASE,
+        ...harness.options,
+        turns: ['One turn.'],
+        sendFn: async (profileId, prompt, options) => {
+            asked = options.onDelta;
+            return { profileId, text: 'reply', error: null };
+        },
+    });
+    assert.equal(asked, null);
+});
+
+test('durations are read in the units a person thinks in', () => {
+    assert.equal(describeDuration(0), '0.0 seconds');
+    assert.equal(describeDuration(8400), '8.4 seconds');
+    assert.equal(describeDuration(42000), '42 seconds');
+    assert.equal(describeDuration(72000), '1 minute 12 seconds');
+    assert.equal(describeDuration(605000), '10 minutes 5 seconds');
+});
+
+/* ------------------------------------------------------------- exporting */
+
+const FINISHED = {
+    columns: [
+        {
+            label: 'Preset 1',
+            error: '',
+            caveats: [],
+            turns: [
+                { index: 1, userText: 'I open the door.', text: 'She looks up.', error: null, promptTokens: 3120, durationMs: 8400 },
+            ],
+        },
+        {
+            label: 'Preset 2',
+            error: '',
+            caveats: [],
+            turns: [
+                { index: 1, userText: 'I open the door.', text: '', error: 'The connection timed out.', promptTokens: 3500, durationMs: 61000 },
+            ],
+        },
+    ],
+};
+
+test('a saved scene keeps who said what, how long it took, and what went wrong', () => {
+    const markdown = formatScene(FINISHED, {
+        format: 'md',
+        characterName: 'Aqua',
+        connectionName: 'Local',
+        savedAt: '9 August 2026',
+    });
+
+    assert.match(markdown, /^# Scene comparison/);
+    assert.match(markdown, /- \*\*Character:\*\* Aqua/);
+    assert.match(markdown, /## Preset 1/);
+    assert.match(markdown, /\*\*You:\*\* I open the door\./);
+    assert.match(markdown, /\*\*Preset 1:\*\* She looks up\./);
+    assert.match(markdown, /\*8\.4 seconds, prompt 3,120 tokens\*/);
+    // A failed turn is written down as a failure rather than as an empty reply.
+    assert.match(markdown, /\*\*Preset 2:\*\* \(The connection timed out\.\)/);
+    assert.ok(markdown.endsWith('\n'));
+});
+
+test('the plain text version carries the same facts without the markup', () => {
+    const text = formatScene(FINISHED, { format: 'txt', characterName: 'Aqua' });
+    assert.doesNotMatch(text, /\*\*/);
+    assert.doesNotMatch(text, /^#/m);
+    assert.match(text, /^SCENE COMPARISON/);
+    assert.match(text, /Character: Aqua/);
+    assert.match(text, /You: I open the door\./);
+    assert.match(text, /Preset 1: She looks up\./);
+    assert.match(text, /\(8\.4 seconds, prompt 3,120 tokens\)/);
+});
+
+test('the file name says what the file holds and stays safe', () => {
+    assert.equal(
+        sceneFileName({ characterName: 'Aqua / Goddess!', format: 'md', savedAt: '2026-08-09T12:00:00.000Z' }),
+        'prompting-lab-scene-aqua-goddess-2026-08-09.md',
+    );
+    assert.equal(sceneFileName({ format: 'txt' }), 'prompting-lab-scene-scene.txt');
 });

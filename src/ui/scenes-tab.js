@@ -6,14 +6,18 @@ import { getContext, loadHost } from '../host.js';
 import * as lab from '../lab.js';
 import { CC_API_ID, labelForApiId, PRESET_API_IDS } from '../presets.js';
 import {
+    describeDuration,
     describeEstimate,
     estimateScene,
+    formatScene,
     MAX_PRESETS,
     MAX_TURNS,
     runSceneComparison,
     SCENE_MODE,
+    sceneFileName,
 } from '../scenes.js';
 import { getSettings, updateSettings } from '../settings.js';
+import { downloadExport } from '../transfer.js';
 
 /**
  * Plays one scene under several presets and shows what each one wrote.
@@ -36,6 +40,7 @@ export function createScenesTab() {
     let sendButton = null;
     let cancelButton = null;
     let status = null;
+    let exportHost = null;
     let output = null;
 
     let options = { characters: [], presets: {}, profiles: [] };
@@ -43,6 +48,13 @@ export function createScenesTab() {
     let presetChecks = [];
     let turnFields = [];
     let controller = null;
+    let lastResult = null;
+    let lastRun = null;
+    let retrying = -1;
+    // The reply arriving is a text change inside one panel, not a new layout;
+    // keeping the nodes lets a stream update without rebuilding the grid.
+    const turnNodes = new Map();
+    let tickTimer = null;
 
     function currentMode() {
         return modeInputs.find(input => input.checked)?.value ?? SCENE_MODE.SCRIPTED;
@@ -218,6 +230,44 @@ export function createScenesTab() {
             && Boolean(characterSelect.value) && Boolean(profileSelect.value);
         sendButton.disabled = !ready || Boolean(controller);
         cancelButton.hidden = !controller;
+        // Nothing may start a second run while one is in flight, retry included.
+        for (const node of output.querySelectorAll('.sbpl-scene-retry')) {
+            node.disabled = Boolean(controller);
+        }
+    }
+
+    /** What the running comparison is doing, read back as it happens. */
+    function handleUpdate({ columns, streaming = null }) {
+        lastResult = { ...(lastResult ?? {}), columns };
+        const nodes = streaming ? turnNodes.get(streaming) : null;
+        if (nodes) {
+            // Only the text and its clock changed; rebuilding the grid here
+            // would throw away the reader's scroll position several times a
+            // second while a long reply arrives.
+            nodes.body.textContent = streaming.text;
+            nodes.label.textContent = turnLabel(streaming);
+            return;
+        }
+        renderColumns({ columns });
+    }
+
+    /** Keeps the clock on a turn that is still being waited for honest. */
+    function startTicking() {
+        stopTicking();
+        tickTimer = setInterval(() => {
+            for (const [turn, nodes] of turnNodes) {
+                if (turn.waiting) {
+                    nodes.label.textContent = turnLabel(turn);
+                }
+            }
+        }, 1000);
+    }
+
+    function stopTicking() {
+        if (tickTimer) {
+            clearInterval(tickTimer);
+            tickTimer = null;
+        }
     }
 
     async function send() {
@@ -228,27 +278,40 @@ export function createScenesTab() {
         }
         controller = new AbortController();
         const { signal } = controller;
+        lastResult = null;
+        replace(exportHost);
+        // Kept as they were when the run started, so a retry repeats this run
+        // rather than whatever the form says by then.
+        lastRun = {
+            presets: chosenPresets(),
+            characterAvatar: characterSelect.value,
+            characterName: options.characters.find(item => item.avatar === characterSelect.value)?.name ?? '',
+            connectionProfileId: profileSelect.value,
+            connectionName: profiles.find(profile => profile.id === profileSelect.value)?.name ?? '',
+            mode: currentMode(),
+            turns: writtenTurns(),
+            exchanges: Number(exchangesInput.value),
+            maxTokens: Number(tokensInput.value),
+        };
         updateControls();
         replace(output);
         status.textContent = 'Building and sending the first turn. This uses tokens.';
+        startTicking();
 
         try {
             const host = await loadHost();
             const result = await runSceneComparison({
-                presets: chosenPresets(),
-                characterAvatar: characterSelect.value,
-                connectionProfileId: profileSelect.value,
-                mode: currentMode(),
-                turns: writtenTurns(),
-                exchanges: Number(exchangesInput.value),
-                maxTokens: Number(tokensInput.value),
+                ...lastRun,
+                live: true,
                 host,
                 signal,
+                onUpdate: handleUpdate,
                 onProgress: (event) => {
                     status.textContent = `${event.presetName}: turn ${event.turn} of ${event.turnTotal}`
                         + ` (preset ${event.presetIndex} of ${event.presetTotal})`;
                 },
             });
+            lastResult = result;
             renderColumns(result);
             const parts = [result.aborted ? 'Stopped.' : 'Finished.'];
             parts.push(result.restoreProblems.length
@@ -258,33 +321,103 @@ export function createScenesTab() {
         } catch (error) {
             status.textContent = `The scene could not be compared: ${errorMessage(error)}`;
         } finally {
+            stopTicking();
             controller = null;
             updateControls();
+            renderExportBar();
         }
+    }
+
+    /**
+     * Plays the scene again for one preset whose connection let it down. The
+     * column starts over from the first turn: a scene half told cannot be
+     * picked up in the middle without pretending the missing reply happened.
+     */
+    async function retryColumn(index) {
+        if (controller || !lastRun) {
+            return;
+        }
+        const target = lastResult?.columns?.[index];
+        if (!target) {
+            return;
+        }
+        controller = new AbortController();
+        retrying = index;
+        updateControls();
+        status.textContent = `Trying ${target.label} again. This uses tokens.`;
+        startTicking();
+
+        try {
+            const host = await loadHost();
+            const result = await runSceneComparison({
+                ...lastRun,
+                presets: [target.preset],
+                live: true,
+                host,
+                signal: controller.signal,
+                onUpdate: ({ columns, streaming }) => {
+                    const merged = lastResult.columns.slice();
+                    merged[index] = columns[0] ?? merged[index];
+                    handleUpdate({ columns: merged, streaming });
+                },
+            });
+            lastResult.columns[index] = result.columns[0] ?? target;
+            renderColumns(lastResult);
+            status.textContent = result.restoreProblems.length
+                ? `Tried again, but your settings could not be fully put back: ${result.restoreProblems.join('; ')}.`
+                : `Tried ${target.label} again. Your settings have been put back.`;
+        } catch (error) {
+            status.textContent = `That preset could not be tried again: ${errorMessage(error)}`;
+        } finally {
+            stopTicking();
+            controller = null;
+            retrying = -1;
+            updateControls();
+            renderExportBar();
+        }
+    }
+
+    function turnLabel(turn) {
+        const timing = turn.waiting
+            ? `waiting ${describeDuration(turn.durationMs)}`
+            : describeDuration(turn.durationMs);
+        return `Turn ${turn.index} · ${timing} · prompt ${formatTokens(turn.promptTokens)} tokens`;
+    }
+
+    /** True when a column stopped early and is worth another attempt. */
+    function columnFailed(column) {
+        return Boolean(column.error) || (column.turns ?? []).some(turn => turn.error);
     }
 
     function renderColumns(result) {
         replace(output);
+        turnNodes.clear();
         if (!result.columns.length) {
             return;
         }
 
         const grid = element('div', { className: 'sbpl-ab-grid' });
-        for (const column of result.columns) {
+        for (const [index, column] of result.columns.entries()) {
             const panel = element('section', { className: 'sbpl-ab-panel' });
             panel.append(element('h4', { className: 'sbpl-ab-title', text: column.label }));
             if (column.error) {
                 panel.append(element('pre', { className: 'sbpl-ab-body sbpl-ab-error', text: column.error }));
             }
             for (const turn of column.turns) {
-                panel.append(element('p', {
-                    className: 'sbpl-scene-turn-label',
-                    text: `Turn ${turn.index} · prompt ${formatTokens(turn.promptTokens)} tokens`,
-                }));
-                panel.append(element('p', { className: 'sbpl-scene-said', text: turn.userText }));
-                panel.append(element('pre', {
+                const label = element('p', { className: 'sbpl-scene-turn-label', text: turnLabel(turn) });
+                const body = element('pre', {
                     className: turn.error ? 'sbpl-ab-body sbpl-ab-error' : 'sbpl-ab-body',
                     text: turn.error ?? turn.text,
+                });
+                panel.append(label);
+                panel.append(element('p', { className: 'sbpl-scene-said', text: turn.userText }));
+                panel.append(body);
+                turnNodes.set(turn, { label, body });
+            }
+            if (columnFailed(column) && column.done) {
+                panel.append(button(`Try ${column.label} again`, () => { void retryColumn(index); }, {
+                    className: 'menu_button sbpl-button sbpl-scene-retry',
+                    title: 'Plays this scene again for this preset, from the first turn. This uses tokens.',
                 }));
             }
             grid.append(panel);
@@ -307,6 +440,37 @@ export function createScenesTab() {
             wrapper.append(list);
             output.append(wrapper);
         }
+        updateControls();
+    }
+
+    /** Saving is offered once there is something worth keeping. */
+    function renderExportBar() {
+        replace(exportHost);
+        if (!lastResult?.columns?.length || controller) {
+            return;
+        }
+        const save = (format) => {
+            const savedAt = new Date().toISOString();
+            try {
+                downloadExport(
+                    sceneFileName({ characterName: lastRun?.characterName ?? '', format, savedAt }),
+                    formatScene(lastResult, {
+                        format,
+                        characterName: lastRun?.characterName ?? '',
+                        connectionName: lastRun?.connectionName ?? '',
+                        savedAt: new Date(savedAt).toLocaleString(),
+                    }),
+                    format === 'txt' ? 'text/plain' : 'text/markdown',
+                );
+                status.textContent = `Saved the scene as a ${format === 'txt' ? 'text' : 'Markdown'} file.`;
+            } catch (error) {
+                status.textContent = `The scene could not be saved: ${errorMessage(error)}`;
+            }
+        };
+        exportHost.append(
+            button('Save as Markdown', () => save('md'), { className: 'menu_button sbpl-button' }),
+            button('Save as text', () => save('txt'), { className: 'menu_button sbpl-button' }),
+        );
     }
 
     function build() {
@@ -375,6 +539,7 @@ export function createScenesTab() {
         cancelButton.hidden = true;
 
         status = statusRegion('');
+        exportHost = element('div', { className: 'sbpl-controls sbpl-scene-export' });
         output = element('div', { className: 'sbpl-ab-output' });
 
         const actions = element('div', { className: 'sbpl-controls' });
@@ -398,6 +563,7 @@ export function createScenesTab() {
             estimateLine,
             actions,
             status,
+            exportHost,
             output,
         );
         renderTurnFields();
@@ -419,6 +585,8 @@ export function createScenesTab() {
         },
         dispose() {
             controller?.abort();
+            stopTicking();
+            turnNodes.clear();
             root?.remove();
             root = null;
         },

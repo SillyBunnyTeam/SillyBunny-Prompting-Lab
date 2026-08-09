@@ -170,11 +170,11 @@ export function parseImport(text) {
 }
 
 /** Offers a file to the browser for download. */
-export function downloadExport(fileName, text) {
+export function downloadExport(fileName, text, mimeType = 'application/json') {
     if (typeof globalThis.Blob !== 'function' || typeof document === 'undefined') {
         throw new Error('This browser cannot download files.');
     }
-    const blob = new Blob([text], { type: 'application/json' });
+    const blob = new Blob([text], { type: mimeType });
     const url = URL.createObjectURL(blob);
     try {
         const link = document.createElement('a');

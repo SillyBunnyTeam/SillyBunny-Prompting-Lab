@@ -990,6 +990,15 @@
     gap: 0.3em 1em;
 }
 
+.sbpl-scene-retry {
+    align-self: flex-start;
+    margin-top: 0.6em;
+}
+
+.sbpl-scene-export:empty {
+    display: none;
+}
+
 .sbpl-scene-turn-label {
     margin: 0.6em 0 0.2em;
     font-family: var(--monoFontFamily, monospace);

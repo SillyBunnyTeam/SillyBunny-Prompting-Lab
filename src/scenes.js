@@ -80,6 +80,20 @@ export function estimateScene({
     };
 }
 
+/** How long a reply took, in the units a reader thinks in. */
+export function describeDuration(ms) {
+    const seconds = Math.max(0, Number(ms) || 0) / 1000;
+    if (seconds < 10) {
+        return `${seconds.toFixed(1)} seconds`;
+    }
+    if (seconds < 60) {
+        return `${Math.round(seconds)} seconds`;
+    }
+    const minutes = Math.floor(seconds / 60);
+    const rest = Math.round(seconds - (minutes * 60));
+    return `${minutes} minute${minutes === 1 ? '' : 's'} ${rest} second${rest === 1 ? '' : 's'}`;
+}
+
 /** Says in plain language what pressing the button will do. */
 export function describeEstimate(estimate) {
     if (!estimate?.requests) {
@@ -88,6 +102,70 @@ export function describeEstimate(estimate) {
     return `${estimate.requests} request${estimate.requests === 1 ? '' : 's'}: `
         + `${estimate.turns} turn${estimate.turns === 1 ? '' : 's'} for each of ${estimate.presets} presets, `
         + `up to about ${estimate.replyTokenCeiling.toLocaleString()} reply tokens in total, plus the prompt each time.`;
+}
+
+/**
+ * Writes a finished comparison out as something a person can keep, read
+ * elsewhere, or send to someone else. Markdown keeps the headings; plain text
+ * uses rules instead, so both stay readable on their own.
+ */
+export function formatScene(result, {
+    format = 'md',
+    characterName = '',
+    connectionName = '',
+    savedAt = '',
+} = {}) {
+    const markdown = format !== 'txt';
+    const lines = [];
+    const heading = (level, text) => lines.push(markdown ? `${'#'.repeat(level)} ${text}` : text.toUpperCase());
+    const rule = () => lines.push(markdown ? '' : '-'.repeat(60));
+
+    heading(1, 'Scene comparison');
+    lines.push('');
+    for (const [label, value] of [
+        ['Character', characterName],
+        ['Connection', connectionName],
+        ['Saved', savedAt],
+    ]) {
+        if (value) {
+            lines.push(markdown ? `- **${label}:** ${value}` : `${label}: ${value}`);
+        }
+    }
+    lines.push('');
+
+    for (const column of result?.columns ?? []) {
+        rule();
+        heading(2, column.label);
+        lines.push('');
+        if (column.error) {
+            lines.push(markdown ? `> ${column.error}` : `! ${column.error}`, '');
+        }
+        for (const turn of column.turns ?? []) {
+            heading(3, `Turn ${turn.index}`);
+            lines.push('');
+            lines.push(markdown ? `**You:** ${turn.userText}` : `You: ${turn.userText}`);
+            lines.push('');
+            const body = turn.error ? `(${turn.error})` : turn.text;
+            lines.push(markdown ? `**${column.label}:** ${body}` : `${column.label}: ${body}`);
+            lines.push('');
+            const facts = `${describeDuration(turn.durationMs)}, prompt ${turn.promptTokens.toLocaleString()} tokens`;
+            lines.push(markdown ? `*${facts}*` : `(${facts})`);
+            lines.push('');
+        }
+    }
+
+    return `${lines.join('\n').trimEnd()}\n`;
+}
+
+/** A file name that says what the file holds and stays safe on every system. */
+export function sceneFileName({ characterName = '', format = 'md', savedAt = '' } = {}) {
+    const safe = String(characterName || 'scene')
+        .replace(/[^\w\- ]+/g, '')
+        .trim()
+        .replace(/\s+/g, '-')
+        .toLowerCase() || 'scene';
+    const stamp = String(savedAt).slice(0, 10);
+    return `prompting-lab-scene-${safe}${stamp ? `-${stamp}` : ''}.${format === 'txt' ? 'txt' : 'md'}`;
 }
 
 /**
@@ -109,6 +187,8 @@ export async function runSceneComparison({
     host = null,
     signal = null,
     onProgress = null,
+    onUpdate = null,
+    live = false,
     captureFn = captureOnce,
     applyFn = applyCase,
     sendFn = sendPrompt,
@@ -138,8 +218,10 @@ export async function runSceneComparison({
                 turns: [],
                 caveats: [],
                 error: '',
+                done: false,
             };
             columns.push(column);
+            onUpdate?.({ columns });
 
             try {
                 await applyFn(context, {
@@ -150,6 +232,8 @@ export async function runSceneComparison({
                 }, { signal });
             } catch (error) {
                 column.error = String(error?.message ?? error);
+                column.done = true;
+                onUpdate?.({ columns });
                 continue;
             }
 
@@ -172,6 +256,8 @@ export async function runSceneComparison({
                     capture = await captureFn({ scene: [...scene], context, host });
                 } catch (error) {
                     column.error = String(error?.message ?? error);
+                    column.done = true;
+                    onUpdate?.({ columns });
                     break;
                 }
                 for (const caveat of capture?.caveats ?? []) {
@@ -180,19 +266,39 @@ export async function runSceneComparison({
                     }
                 }
 
+                // The record exists before the reply does, so a watcher can
+                // show the turn filling in rather than a blank wait.
+                const record = {
+                    index: index + 1,
+                    userText,
+                    text: '',
+                    error: null,
+                    promptTokens: Number(capture?.tokenTable?.total ?? 0),
+                    durationMs: 0,
+                    waiting: true,
+                };
+                column.turns.push(record);
+                onUpdate?.({ columns });
+
+                const startedMs = Date.now();
                 const prompt = capture?.messages ?? capture?.combinedPrompt ?? '';
                 const reply = await sendFn(connectionProfileId, prompt, {
                     hostRef: context,
                     maxTokens,
                     signal,
+                    onDelta: live
+                        ? (text) => {
+                            record.text = text;
+                            record.durationMs = Date.now() - startedMs;
+                            onUpdate?.({ columns, streaming: record });
+                        }
+                        : null,
                 });
-                column.turns.push({
-                    index: index + 1,
-                    userText,
-                    text: String(reply?.text ?? ''),
-                    error: reply?.error ?? null,
-                    promptTokens: Number(capture?.tokenTable?.total ?? 0),
-                });
+                record.text = String(reply?.text ?? '');
+                record.error = reply?.error ?? null;
+                record.durationMs = Date.now() - startedMs;
+                record.waiting = false;
+                onUpdate?.({ columns });
 
                 // A scene that stalled cannot be continued honestly: the next
                 // turn would be answering a reply that never arrived.
@@ -201,6 +307,8 @@ export async function runSceneComparison({
                 }
                 scene.push({ role: 'assistant', text: reply.text });
             }
+            column.done = true;
+            onUpdate?.({ columns });
         }
     } finally {
         try {
