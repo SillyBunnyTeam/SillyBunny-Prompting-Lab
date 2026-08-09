@@ -63,12 +63,15 @@
 .sbpl-page {
     --sbpl-line: var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4));
     --sbpl-rail: 15.5em;
+    /* The theme tint is translucent by design (it expects a blur behind it),
+       so stack it on an opaque base: keeps the theme hue, hides the chat. */
+    --sbpl-surface: linear-gradient(var(--SmartThemeBlurTintColor, #1b1f20) 0 100%) #1b1f20;
     position: fixed;
     inset: 0;
     z-index: 4000;
     display: flex;
     flex-direction: column;
-    background-color: var(--SmartThemeBlurTintColor, #1b1f20);
+    background: var(--sbpl-surface);
     color: var(--SmartThemeBodyColor, inherit);
 }
 
@@ -423,7 +426,7 @@
     padding: 0.65em 0.7em;
     border: 1px solid var(--sbpl-line);
     border-radius: 0.5em;
-    background-color: var(--SmartThemeBlurTintColor, #1b1f20);
+    background: var(--sbpl-surface);
 }
 
 .sbpl-readout-title {
