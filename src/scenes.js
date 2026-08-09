@@ -194,10 +194,11 @@ const SCENE_PAGE_STYLE = `
  * A standalone page: every column side by side, each reply rendered as the
  * model wrote it. No file it does not carry itself, and nothing it may fetch.
  */
-function sceneHtmlPage(result, { characterName, connectionName, savedAt }) {
+function sceneHtmlPage(result, { characterName, connectionName, modelName, savedAt }) {
     const facts = [
         characterName ? `Character: ${characterName}` : '',
         connectionName ? `Connection: ${connectionName}` : '',
+        modelName ? `Model: ${modelName}` : '',
         savedAt ? `Saved: ${savedAt}` : '',
     ].filter(Boolean).join(' · ');
 
@@ -253,10 +254,11 @@ export function formatScene(result, {
     format = 'md',
     characterName = '',
     connectionName = '',
+    modelName = '',
     savedAt = '',
 } = {}) {
     if (format === 'html') {
-        return sceneHtmlPage(result, { characterName, connectionName, savedAt });
+        return sceneHtmlPage(result, { characterName, connectionName, modelName, savedAt });
     }
     const markdown = format !== 'txt';
     const lines = [];
@@ -268,6 +270,9 @@ export function formatScene(result, {
     for (const [label, value] of [
         ['Character', characterName],
         ['Connection', connectionName],
+        // The connection says where the replies came from; the model says who
+        // wrote them, and a profile can be pointed somewhere else later.
+        ['Model', modelName],
         ['Saved', savedAt],
     ]) {
         if (value) {

@@ -492,3 +492,21 @@ test('a saved comparison says what the scene opened with', () => {
     assert.match(formatScene(finished, { format: 'txt' }), /THE SCENE OPENED WITH\n\nShe looks up from the bar\./);
     assert.match(formatScene(finished, { format: 'html' }), /class="opening"[\s\S]*She looks up from the bar\./);
 });
+
+test('a saved scene names the model as well as the connection', () => {
+    const details = {
+        characterName: 'Aqua',
+        connectionName: 'Local',
+        modelName: 'claude-sonnet-4',
+        savedAt: '9 August 2026',
+    };
+
+    assert.match(formatScene(FINISHED, { ...details, format: 'md' }), /- \*\*Model:\*\* claude-sonnet-4/);
+    assert.match(formatScene(FINISHED, { ...details, format: 'txt' }), /Model: claude-sonnet-4/);
+    assert.match(formatScene(FINISHED, { ...details, format: 'html' }), /Connection: Local · Model: claude-sonnet-4/);
+
+    // A connection that does not name a model says nothing rather than nothing
+    // useful: no empty "Model:" line to read past.
+    assert.doesNotMatch(formatScene(FINISHED, { ...details, modelName: '', format: 'md' }), /Model:/);
+    assert.doesNotMatch(formatScene(FINISHED, { ...details, modelName: '', format: 'html' }), /Model:/);
+});
