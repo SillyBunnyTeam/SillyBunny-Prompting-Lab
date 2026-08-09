@@ -337,6 +337,10 @@ export async function runSceneComparison({
     mode = SCENE_MODE.SCRIPTED,
     turns = [],
     exchanges = 2,
+    // Resuming: the turn to start at, and what was already said before it, so
+    // one turn can be played again without paying for the ones before it.
+    startAt = 1,
+    history = [],
     maxTokens = 300,
     context = getContext,
     host = null,
@@ -350,7 +354,9 @@ export async function runSceneComparison({
     snapshotFn = snapshotState,
     restoreFn = restoreState,
 } = {}) {
-    const script = sceneTurns({ mode, turns, exchanges });
+    const fullScript = sceneTurns({ mode, turns, exchanges });
+    const from = Math.min(Math.max(Math.floor(Number(startAt)) || 1, 1), Math.max(fullScript.length, 1));
+    const script = fullScript.slice(from - 1);
     const chosen = (presets ?? []).filter(preset => preset?.name).slice(0, MAX_PRESETS);
     const opening = String(greeting ?? '').trim() ? String(greeting) : '';
     const columns = [];
@@ -403,16 +409,27 @@ export async function runSceneComparison({
             // The chosen greeting opens the scene, so every preset answers the
             // same first message rather than whatever its chat happened to hold.
             const scene = opening ? [{ role: 'assistant', text: opening }] : [];
-            for (const [index, userText] of script.entries()) {
+            // What was already said, when only part of the scene is replayed.
+            for (const entry of history ?? []) {
+                if (String(entry?.text ?? '').trim()) {
+                    scene.push({
+                        role: entry.role === 'assistant' ? 'assistant' : 'user',
+                        text: String(entry.text),
+                    });
+                }
+            }
+
+            for (const [offset, userText] of script.entries()) {
                 if (signal?.aborted) {
                     break;
                 }
+                const turnNumber = from + offset;
                 onProgress?.({
                     presetName: preset.name,
                     presetIndex: columns.length,
                     presetTotal: chosen.length,
-                    turn: index + 1,
-                    turnTotal: script.length,
+                    turn: turnNumber,
+                    turnTotal: fullScript.length,
                 });
 
                 scene.push({ role: 'user', text: userText });
@@ -434,7 +451,7 @@ export async function runSceneComparison({
                 // The record exists before the reply does, so a watcher can
                 // show the turn filling in rather than a blank wait.
                 const record = {
-                    index: index + 1,
+                    index: turnNumber,
                     userText,
                     text: '',
                     error: null,

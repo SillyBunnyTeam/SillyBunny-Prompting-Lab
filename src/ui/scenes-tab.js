@@ -462,6 +462,75 @@ export function createScenesTab() {
         }
     }
 
+    /**
+     * Plays one column again from a chosen turn. Everything said before it is
+     * handed back to the model as it stands, so only the turn being redone, and
+     * the ones after it, are paid for a second time.
+     */
+    async function retryTurn(columnIndex, turnNumber) {
+        if (controller || !lastRun) {
+            return;
+        }
+        const target = lastResult?.columns?.[columnIndex];
+        if (!target) {
+            return;
+        }
+        const kept = target.turns.filter(turn => turn.index < turnNumber);
+        const history = kept.flatMap(turn => [
+            { role: 'user', text: turn.userText },
+            { role: 'assistant', text: turn.text },
+        ]);
+
+        controller = new AbortController();
+        retrying = columnIndex;
+        updateControls();
+        status.textContent = `Playing ${target.label} again from turn ${turnNumber}. This uses tokens.`;
+        startTicking();
+
+        const merge = (fresh) => {
+            const merged = lastResult.columns.slice();
+            merged[columnIndex] = fresh
+                ? {
+                    ...fresh,
+                    // The turns before the retry stay exactly as they were: they
+                    // were not sent again, so nothing about them changed.
+                    turns: [...kept, ...fresh.turns],
+                    caveats: [...new Set([...target.caveats, ...fresh.caveats])],
+                }
+                : target;
+            return merged;
+        };
+
+        try {
+            const host = await loadHost();
+            const result = await runSceneComparison({
+                ...lastRun,
+                presets: [target.preset],
+                startAt: turnNumber,
+                history,
+                live: true,
+                host,
+                signal: controller.signal,
+                onUpdate: ({ columns, streaming }) => {
+                    handleUpdate({ columns: merge(columns[0]), streaming });
+                },
+            });
+            lastResult.columns = merge(result.columns[0]);
+            renderColumns(lastResult);
+            status.textContent = result.restoreProblems.length
+                ? `Played turn ${turnNumber} again, but your settings could not be fully put back: ${result.restoreProblems.join('; ')}.`
+                : `Played ${target.label} again from turn ${turnNumber}. Your settings have been put back.`;
+        } catch (error) {
+            status.textContent = `That turn could not be played again: ${errorMessage(error)}`;
+        } finally {
+            stopTicking();
+            controller = null;
+            retrying = -1;
+            updateControls();
+            renderExportBar();
+        }
+    }
+
     function turnLabel(turn) {
         const timing = turn.waiting
             ? `waiting ${describeDuration(turn.durationMs)}`
@@ -498,11 +567,23 @@ export function createScenesTab() {
                 panel.append(element('p', { className: 'sbpl-scene-said', text: turn.userText }));
                 panel.append(body);
                 turnNodes.set(turn, { label, body });
+
+                // Offered where it is worth the tokens: a turn that failed, and
+                // the last one, which is the one usually worth another roll.
+                const isLast = turn === column.turns[column.turns.length - 1];
+                if (column.done && !turn.waiting && (turn.error || isLast)) {
+                    panel.append(button(`Play turn ${turn.index} again`, () => {
+                        void retryTurn(index, turn.index);
+                    }, {
+                        className: 'menu_button sbpl-button sbpl-button-quiet sbpl-scene-retry',
+                        title: 'Sends this turn again with everything before it left as it is. This uses tokens.',
+                    }));
+                }
             }
             if (columnFailed(column) && column.done) {
-                panel.append(button(`Try ${column.label} again`, () => { void retryColumn(index); }, {
+                panel.append(button('Play the whole scene again', () => { void retryColumn(index); }, {
                     className: 'menu_button sbpl-button sbpl-scene-retry',
-                    title: 'Plays this scene again for this preset, from the first turn. This uses tokens.',
+                    title: `Plays every turn again for ${column.label}, from the first. This uses tokens.`,
                 }));
             }
             grid.append(panel);

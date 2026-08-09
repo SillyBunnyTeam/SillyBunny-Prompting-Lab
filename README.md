@@ -218,9 +218,12 @@ the end, and each turn says how long it took, in seconds or minutes, next to wha
 tokens. That matters with a reasoning model, which can spend a long time thinking before the first
 word appears.
 
-If a connection fails or a reply comes back empty, that column stops there and offers **Try this
-preset again**, which replays the scene for that preset alone from the first turn. The other columns
-are left as they are.
+If a connection fails or a reply comes back empty, that column stops there. **Play turn 2 again**
+sends just that turn, with the opening and everything said before it handed back exactly as it
+stands, then carries on through the rest of the scene; the turns before it are not sent again and
+cost nothing. The same button sits on the last turn of a finished column, for when a reply is fine
+but not what you wanted. **Play the whole scene again** starts that preset over from the first turn.
+Either way the other columns are left as they are.
 
 When the run finishes, **Save as Markdown**, **Save as text** and **Save as web page** write the
 whole comparison to a file: every preset, every turn, what was said and what came back, how long

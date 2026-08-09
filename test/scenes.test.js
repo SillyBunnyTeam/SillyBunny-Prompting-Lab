@@ -510,3 +510,70 @@ test('a saved scene names the model as well as the connection', () => {
     assert.doesNotMatch(formatScene(FINISHED, { ...details, modelName: '', format: 'md' }), /Model:/);
     assert.doesNotMatch(formatScene(FINISHED, { ...details, modelName: '', format: 'html' }), /Model:/);
 });
+
+/* --------------------------------------------------------- playing again */
+
+test('one turn can be played again without paying for the ones before it', async () => {
+    const harness = makeHarness();
+    const result = await runSceneComparison({
+        ...BASE,
+        ...harness.options,
+        presets: [{ apiId: 'openai', name: 'Preset 1' }],
+        greeting: 'She looks up.',
+        turns: ['I open the door.', '"Who sent you?"', 'I wait.'],
+        startAt: 2,
+        history: [
+            { role: 'user', text: 'I open the door.' },
+            { role: 'assistant', text: 'She says nothing.' },
+        ],
+    });
+
+    // The opening and what was already said are handed back as they stand, and
+    // only the turns from the second onwards are sent again.
+    assert.deepEqual(harness.built, [
+        [
+            'assistant:She looks up.',
+            'user:I open the door.',
+            'assistant:She says nothing.',
+            'user:"Who sent you?"',
+        ],
+        [
+            'assistant:She looks up.',
+            'user:I open the door.',
+            'assistant:She says nothing.',
+            'user:"Who sent you?"',
+            'assistant:P1 reply 1',
+            'user:I wait.',
+        ],
+    ]);
+
+    // The turns keep the numbers they had, so a retry does not renumber a scene.
+    assert.deepEqual(result.columns[0].turns.map(turn => turn.index), [2, 3]);
+    assert.deepEqual(result.columns[0].turns.map(turn => turn.userText), ['"Who sent you?"', 'I wait.']);
+});
+
+test('the progress of a retry counts against the whole scene, not the part being replayed', async () => {
+    const harness = makeHarness();
+    const seen = [];
+    await runSceneComparison({
+        ...BASE,
+        ...harness.options,
+        presets: [{ apiId: 'openai', name: 'Preset 1' }],
+        turns: ['One.', 'Two.', 'Three.'],
+        startAt: 3,
+        onProgress: event => seen.push(`${event.turn} of ${event.turnTotal}`),
+    });
+    assert.deepEqual(seen, ['3 of 3']);
+});
+
+test('a turn number outside the scene is pulled back to one that exists', async () => {
+    const harness = makeHarness();
+    const result = await runSceneComparison({
+        ...BASE,
+        ...harness.options,
+        presets: [{ apiId: 'openai', name: 'Preset 1' }],
+        turns: ['One.', 'Two.'],
+        startAt: 9,
+    });
+    assert.deepEqual(result.columns[0].turns.map(turn => turn.index), [2]);
+});
