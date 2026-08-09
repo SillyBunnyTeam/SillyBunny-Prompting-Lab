@@ -207,9 +207,15 @@ If a connection fails or a reply comes back empty, that column stops there and o
 preset again**, which replays the scene for that preset alone from the first turn. The other columns
 are left as they are.
 
-When the run finishes, **Save as Markdown** and **Save as text** write the whole comparison to a
-file: every preset, every turn, what was said and what came back, how long each reply took, and any
-failures, exactly as shown.
+When the run finishes, **Save as Markdown**, **Save as text** and **Save as web page** write the
+whole comparison to a file: every preset, every turn, what was said and what came back, how long
+each reply took, and any failures, exactly as shown.
+
+Save as web page is the one to use when replies carry markup of their own, such as a tracker or a
+styled card: the saved page renders it instead of showing the tags. That markup was written by a
+model, so scripts, frames and event handlers are removed, and the page itself blocks anything it
+would have to fetch, including remote images. A reply that styles itself may still colour the page
+around it. The file stands on its own and can be opened anywhere.
 
 Before you press the button it says how many requests that will be and roughly how many reply tokens
 they may use. Nothing is added to any chat: the turns are put into the chat in memory only for as

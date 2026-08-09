@@ -449,6 +449,11 @@ export function createScenesTab() {
         if (!lastResult?.columns?.length || controller) {
             return;
         }
+        const FORMATS = {
+            md: { label: 'Markdown', mime: 'text/markdown' },
+            txt: { label: 'text', mime: 'text/plain' },
+            html: { label: 'web page', mime: 'text/html' },
+        };
         const save = (format) => {
             const savedAt = new Date().toISOString();
             try {
@@ -460,9 +465,9 @@ export function createScenesTab() {
                         connectionName: lastRun?.connectionName ?? '',
                         savedAt: new Date(savedAt).toLocaleString(),
                     }),
-                    format === 'txt' ? 'text/plain' : 'text/markdown',
+                    FORMATS[format].mime,
                 );
-                status.textContent = `Saved the scene as a ${format === 'txt' ? 'text' : 'Markdown'} file.`;
+                status.textContent = `Saved the scene as a ${FORMATS[format].label} file.`;
             } catch (error) {
                 status.textContent = `The scene could not be saved: ${errorMessage(error)}`;
             }
@@ -470,6 +475,10 @@ export function createScenesTab() {
         exportHost.append(
             button('Save as Markdown', () => save('md'), { className: 'menu_button sbpl-button' }),
             button('Save as text', () => save('txt'), { className: 'menu_button sbpl-button' }),
+            button('Save as web page', () => save('html'), {
+                className: 'menu_button sbpl-button',
+                title: 'Keeps any markup a reply carried, such as a tracker or a styled card',
+            }),
         );
     }
 

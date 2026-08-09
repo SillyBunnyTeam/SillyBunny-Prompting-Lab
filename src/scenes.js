@@ -104,10 +104,107 @@ export function describeEstimate(estimate) {
         + `up to about ${estimate.replyTokenCeiling.toLocaleString()} reply tokens in total, plus the prompt each time.`;
 }
 
+const HTML_ESCAPES = Object.freeze({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+});
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, character => HTML_ESCAPES[character]);
+}
+
+/**
+ * Replies often carry markup of their own: a tracker, a styled card, a table.
+ * A saved page keeps that markup so it reads the way it was meant to, but it
+ * was written by a model, and opening a file must never run someone's script.
+ *
+ * Scripts, frames and event handlers are taken out here, and the page carries
+ * a policy that blocks anything that gets past this, so neither has to be
+ * perfect on its own. A reply's own styling is kept, so a card that styles
+ * itself may also colour the page around it.
+ */
+export function sanitizeReplyHtml(value) {
+    return String(value ?? '')
+        .replace(/<\s*(script|iframe|object|embed|frame|frameset)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+        .replace(/<\s*(script|iframe|object|embed|frame|frameset|link|meta|base)\b[^>]*\/?>/gi, '')
+        .replace(/\son[a-z]+\s*=\s*"[^"]*"/gi, '')
+        .replace(/\son[a-z]+\s*=\s*'[^']*'/gi, '')
+        .replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, '')
+        .replace(/javascript:/gi, 'blocked:');
+}
+
+/** The saved page's own styling, kept small enough to read. */
+const SCENE_PAGE_STYLE = `
+    :root { color-scheme: light dark; }
+    body { margin: 0 auto; padding: 2rem 1.25rem; max-width: 78rem; font-family: system-ui, sans-serif; line-height: 1.5; }
+    h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
+    .facts { margin: 0 0 0.5rem; opacity: 0.75; font-size: 0.9rem; }
+    .note { margin: 0 0 2rem; padding: 0.6rem 0.8rem; border-left: 3px solid currentColor; opacity: 0.7; font-size: 0.85rem; }
+    .columns { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); align-items: start; }
+    .column { padding: 1rem; border: 1px solid rgba(128, 128, 128, 0.4); border-radius: 0.5rem; min-width: 0; }
+    .column > h2 { margin: 0 0 0.75rem; font-size: 1.1rem; }
+    .meta { margin: 1rem 0 0.25rem; font-family: ui-monospace, monospace; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.6; }
+    .said { margin: 0 0 0.5rem; padding-left: 0.6rem; border-left: 2px solid rgba(128, 128, 128, 0.5); font-style: italic; opacity: 0.85; }
+    .reply { overflow-wrap: break-word; }
+    .reply img, .reply table { max-width: 100%; }
+    .failed { color: #c0392b; }
+`;
+
+/**
+ * A standalone page: every column side by side, each reply rendered as the
+ * model wrote it. No file it does not carry itself, and nothing it may fetch.
+ */
+function sceneHtmlPage(result, { characterName, connectionName, savedAt }) {
+    const facts = [
+        characterName ? `Character: ${characterName}` : '',
+        connectionName ? `Connection: ${connectionName}` : '',
+        savedAt ? `Saved: ${savedAt}` : '',
+    ].filter(Boolean).join(' · ');
+
+    const columns = (result?.columns ?? []).map((column) => {
+        const parts = [`<h2>${escapeHtml(column.label)}</h2>`];
+        if (column.error) {
+            parts.push(`<p class="failed">${escapeHtml(column.error)}</p>`);
+        }
+        for (const turn of column.turns ?? []) {
+            const timing = `${describeDuration(turn.durationMs)} · prompt ${Number(turn.promptTokens ?? 0).toLocaleString()} tokens`;
+            parts.push(`<p class="meta">Turn ${escapeHtml(turn.index)} · ${escapeHtml(timing)}</p>`);
+            parts.push(`<p class="said">${escapeHtml(turn.userText)}</p>`);
+            parts.push(turn.error
+                ? `<p class="failed">${escapeHtml(turn.error)}</p>`
+                : `<div class="reply">${sanitizeReplyHtml(turn.text)}</div>`);
+        }
+        return `<section class="column">\n${parts.join('\n')}\n</section>`;
+    }).join('\n');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:">
+<title>Scene comparison${characterName ? ` — ${escapeHtml(characterName)}` : ''}</title>
+<style>${SCENE_PAGE_STYLE}</style>
+</head>
+<body>
+<h1>Scene comparison</h1>
+${facts ? `<p class="facts">${escapeHtml(facts)}</p>` : ''}
+<p class="note">Replies are shown as the model wrote them, markup and all. Scripts and anything this
+page would have to fetch are blocked, so a reply cannot do anything when this file is opened.</p>
+<div class="columns">
+${columns}
+</div>
+</body>
+</html>
+`;
+}
+
 /**
  * Writes a finished comparison out as something a person can keep, read
- * elsewhere, or send to someone else. Markdown keeps the headings; plain text
- * uses rules instead, so both stay readable on their own.
+ * elsewhere, or send to someone else. Markdown keeps the headings, plain text
+ * uses rules instead, and a web page renders the markup a reply carried.
  */
 export function formatScene(result, {
     format = 'md',
@@ -115,6 +212,9 @@ export function formatScene(result, {
     connectionName = '',
     savedAt = '',
 } = {}) {
+    if (format === 'html') {
+        return sceneHtmlPage(result, { characterName, connectionName, savedAt });
+    }
     const markdown = format !== 'txt';
     const lines = [];
     const heading = (level, text) => lines.push(markdown ? `${'#'.repeat(level)} ${text}` : text.toUpperCase());
@@ -165,7 +265,8 @@ export function sceneFileName({ characterName = '', format = 'md', savedAt = '' 
         .replace(/\s+/g, '-')
         .toLowerCase() || 'scene';
     const stamp = String(savedAt).slice(0, 10);
-    return `prompting-lab-scene-${safe}${stamp ? `-${stamp}` : ''}.${format === 'txt' ? 'txt' : 'md'}`;
+    const extension = { txt: 'txt', html: 'html' }[format] ?? 'md';
+    return `prompting-lab-scene-${safe}${stamp ? `-${stamp}` : ''}.${extension}`;
 }
 
 /**

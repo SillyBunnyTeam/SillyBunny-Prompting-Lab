@@ -12,6 +12,7 @@ const {
     estimateScene,
     formatScene,
     runSceneComparison,
+    sanitizeReplyHtml,
     SCENE_MODE,
     sceneFileName,
     sceneTurns,
@@ -317,4 +318,73 @@ test('the file name says what the file holds and stays safe', () => {
         'prompting-lab-scene-aqua-goddess-2026-08-09.md',
     );
     assert.equal(sceneFileName({ format: 'txt' }), 'prompting-lab-scene-scene.txt');
+});
+
+/* ---------------------------------------------------------- the web page */
+
+const WITH_MARKUP = {
+    columns: [{
+        label: 'Preset 1',
+        error: '',
+        caveats: [],
+        turns: [{
+            index: 1,
+            userText: 'Show me the <tracker> & stats',
+            text: '<div class="tracker" style="color:red">Mood: <b>wary</b></div>',
+            error: null,
+            promptTokens: 3120,
+            durationMs: 8400,
+        }],
+    }],
+};
+
+test('a saved web page keeps the markup a reply carried', () => {
+    const page = formatScene(WITH_MARKUP, { format: 'html', characterName: 'Aqua' });
+
+    assert.match(page, /^<!DOCTYPE html>/);
+    assert.match(page, /<div class="tracker" style="color:red">Mood: <b>wary<\/b><\/div>/);
+    // What the user typed is text, so its angle brackets stay visible rather
+    // than becoming an element in the saved page.
+    assert.match(page, /Show me the &lt;tracker&gt; &amp; stats/);
+    assert.match(page, /8\.4 seconds · prompt 3,120 tokens/);
+});
+
+test('a saved web page cannot run what a model wrote', () => {
+    const page = formatScene({
+        columns: [{
+            label: 'Preset 1',
+            error: '',
+            caveats: [],
+            turns: [{
+                index: 1,
+                userText: 'go',
+                text: '<script>fetch("http://example.test")</script>'
+                    + '<img src=x onerror="alert(1)">'
+                    + '<a href="javascript:alert(2)">tap</a>'
+                    + '<iframe src="http://example.test"></iframe>',
+                error: null,
+                promptTokens: 10,
+                durationMs: 1000,
+            }],
+        }],
+    }, { format: 'html' });
+
+    assert.doesNotMatch(page, /<script>/i);
+    assert.doesNotMatch(page, /<iframe/i);
+    assert.doesNotMatch(page, /onerror/i);
+    assert.doesNotMatch(page, /javascript:/i);
+    // Belt and braces: even markup that got past the strip cannot run or fetch.
+    assert.match(page, /Content-Security-Policy" content="default-src 'none'/);
+});
+
+test('the stripper leaves ordinary markup alone', () => {
+    const kept = '<div class="card"><style>.card{color:red}</style><b>Mood</b>: wary</div>';
+    assert.equal(sanitizeReplyHtml(kept), kept);
+});
+
+test('a web page export is named as one', () => {
+    assert.equal(
+        sceneFileName({ characterName: 'Aqua', format: 'html', savedAt: '2026-08-09T12:00:00.000Z' }),
+        'prompting-lab-scene-aqua-2026-08-09.html',
+    );
 });
