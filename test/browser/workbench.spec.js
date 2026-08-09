@@ -46,6 +46,10 @@ test('closing the page puts the workbench back in the drawer', async ({ page }) 
 test('Escape closes the page workspace', async ({ page }) => {
     await page.locator('#sbpl-menu-item').click();
     await expect(page.locator('#sbpl-page')).toBeVisible();
+    // The workspace moves focus into itself on the next frame. Pressing before
+    // that happens sends the key to the wand item outside the dialog, where
+    // nothing listens for it.
+    await expect(page.locator('#sbpl-page .sbpl-tab[aria-selected="true"]')).toBeFocused();
     await page.locator('#sbpl-page').press('Escape');
     await expect(page.locator('#sbpl-page')).toBeHidden();
 });
