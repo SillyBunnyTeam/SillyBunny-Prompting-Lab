@@ -43,19 +43,31 @@ export function normalizeSettings(value) {
     };
 }
 
+/** A newer settings document must remain untouched until this code understands it. */
+export function isSettingsReadOnly(value = getContext()?.extensionSettings?.[SETTINGS_KEY]) {
+    return Boolean(value && typeof value === 'object' && Number(value.schemaVersion) > SETTINGS_VERSION);
+}
+
 /**
  * Forward-only migration hook. Kept separate from normalizeSettings so future
  * versions can move fields before the generic repair pass runs.
  */
 export function migrateSettings(value) {
     const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    if (isSettingsReadOnly(source)) {
+        return source;
+    }
     // v0 -> v1: first released schema; nothing to move yet.
     return normalizeSettings(source);
 }
 
 export function getSettings() {
     const context = getContext();
-    const settings = migrateSettings(context?.extensionSettings?.[SETTINGS_KEY]);
+    const stored = context?.extensionSettings?.[SETTINGS_KEY];
+    if (isSettingsReadOnly(stored)) {
+        return normalizeSettings(stored);
+    }
+    const settings = migrateSettings(stored);
     if (context?.extensionSettings) {
         context.extensionSettings[SETTINGS_KEY] = settings;
     }
@@ -76,6 +88,10 @@ export function isOwnSettingsEcho(withinMs = 2500) {
 
 export function updateSettings(patch) {
     const context = getContext();
+    const stored = context?.extensionSettings?.[SETTINGS_KEY];
+    if (isSettingsReadOnly(stored)) {
+        return normalizeSettings(stored);
+    }
     const next = normalizeSettings({ ...getSettings(), ...patch });
     if (context?.extensionSettings) {
         context.extensionSettings[SETTINGS_KEY] = next;

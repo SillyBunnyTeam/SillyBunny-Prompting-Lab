@@ -58,6 +58,11 @@
     cursor: pointer;
 }
 
+.sbpl-menu-item:focus-visible {
+    outline: 2px solid var(--active, currentColor);
+    outline-offset: 2px;
+}
+
 /* ---- full-page workspace ---- */
 
 .sbpl-page {

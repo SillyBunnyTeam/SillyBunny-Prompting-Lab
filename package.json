@@ -1,6 +1,6 @@
 {
     "name": "sillybunny-prompting-lab",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "private": true,
     "type": "module",
     "description": "Save prompt test cases for your characters and check whether a preset, macro, or update changed the prompts they produce.",
@@ -19,7 +19,7 @@
         "test:browser": "playwright test --project=chromium",
         "test:browser:all": "playwright test",
         "test:browser:webkit": "playwright test --project=webkit",
-        "test:host": "PROMPT_LAB_REQUIRE_HOST=1 node --test test/host-contract.test.js"
+        "test:host": "node --test test/host-contract.test.js"
     },
     "devDependencies": {
         "@playwright/test": "^1.54.2"

@@ -11,7 +11,11 @@ import { ctxOf, getContext } from './host.js';
 
 /** Profile modes that can be used for a comparison. */
 export function isProfileUsable(hostRef, profile) {
-    const service = ctxOf(hostRef)?.ConnectionManagerRequestService;
+    const context = ctxOf(hostRef);
+    if (context?.extensionSettings?.disabledExtensions?.includes?.('connection-manager')) {
+        return false;
+    }
+    const service = context?.ConnectionManagerRequestService;
     if (!service || !profile) {
         return false;
     }
@@ -54,6 +58,9 @@ export async function sendPrompt(profileId, prompt, {
     maxTokens = 300,
     signal = null,
     onDelta = null,
+    includePreset = true,
+    includeInstruct = true,
+    presetName = null,
 } = {}) {
     const context = ctxOf(hostRef);
     const service = context?.ConnectionManagerRequestService;
@@ -64,28 +71,52 @@ export async function sendPrompt(profileId, prompt, {
             error: 'Side-by-side replies need the Connection Manager extension, which is not available.',
         };
     }
-    if (!prompt || (Array.isArray(prompt) && !prompt.length)) {
+    if (!hasPrompt(prompt)) {
         return { profileId, text: '', error: 'There is nothing to send.' };
     }
 
     // Streaming is only asked for when someone is watching the reply arrive.
     // Without a listener the plain request is simpler and just as complete.
     const wantsStream = typeof onDelta === 'function';
+    let text = '';
     try {
-        const response = await service.sendRequest(profileId, prompt, maxTokens, {
+        let receiver = service;
+        if (presetName && typeof service.getProfile === 'function') {
+            try {
+                const profile = service.getProfile(profileId);
+                if (profile && typeof profile === 'object') {
+                    receiver = Object.create(service);
+                    Object.defineProperty(receiver, 'getProfile', {
+                        value: id => id === profileId
+                            ? { ...profile, preset: presetName }
+                            : service.getProfile(id),
+                    });
+                }
+            } catch {
+                receiver = service;
+            }
+        }
+        const response = await receiver.sendRequest(profileId, prompt, maxTokens, {
             stream: wantsStream,
             signal,
             extractData: true,
-            includePreset: true,
-            includeInstruct: true,
+            includePreset,
+            includeInstruct,
         });
-        const text = wantsStream
-            ? await readStream(response, onDelta)
+        text = wantsStream
+            ? await readStream(response, (value) => {
+                text = value;
+                onDelta(value);
+            })
             : readReply(response);
-        return { profileId, text, error: text ? null : 'The model returned an empty reply.' };
+        return { profileId, text, error: text.trim() ? null : 'The model returned an empty reply.' };
     } catch (error) {
-        return { profileId, text: '', error: describeSendError(error) };
+        return { profileId, text, error: describeSendError(error) };
     }
+}
+
+function hasPrompt(prompt) {
+    return Array.isArray(prompt) ? prompt.length > 0 : Boolean(String(prompt ?? '').trim());
 }
 
 function readReply(response) {
@@ -122,7 +153,7 @@ async function readStream(response, onDelta) {
  */
 export async function sendUnderProfile(run, profileId, options = {}) {
     const prompt = run?.capture?.messages ?? run?.capture?.combinedPrompt ?? '';
-    if (!prompt || (Array.isArray(prompt) && !prompt.length)) {
+    if (!hasPrompt(prompt)) {
         return {
             profileId,
             text: '',
@@ -133,17 +164,33 @@ export async function sendUnderProfile(run, profileId, options = {}) {
 }
 
 function describeSendError(error) {
-    const message = String(error?.message ?? error ?? 'Unknown problem');
-    if (/Connection Manager is not available/i.test(message)) {
+    const chain = [];
+    const seen = new Set();
+    let current = error;
+    while (current != null && !seen.has(current)) {
+        seen.add(current);
+        chain.push({
+            name: String(current?.name ?? ''),
+            message: String(current?.message ?? current ?? ''),
+        });
+        current = current?.cause;
+    }
+    const details = chain.map(item => `${item.name} ${item.message}`).join('\n');
+    if (/Connection Manager is not available/i.test(details)) {
         return 'The Connection Manager extension is turned off, so a profile cannot be used.';
     }
-    if (/does not support chat completions/i.test(message)) {
+    if (/does not support chat completions/i.test(details)) {
         return 'This connection profile cannot be used to compare model replies.';
     }
-    if (/aborted|AbortError/i.test(message)) {
+    if (/aborted|AbortError/i.test(details)) {
         return 'Stopped before the model replied.';
     }
-    return message;
+    for (let index = chain.length - 1; index >= 0; index -= 1) {
+        if (chain[index].message) {
+            return chain[index].message;
+        }
+    }
+    return 'Unknown problem';
 }
 
 /**
@@ -152,9 +199,14 @@ function describeSendError(error) {
  * other, and a failure on one side still returns the other.
  */
 export async function compareProfiles(run, profileIds, options = {}) {
-    const ids = [...new Set((profileIds ?? []).filter(Boolean))];
-    if (!ids.length) {
-        return [];
+    const ids = Array.isArray(profileIds) ? profileIds.filter(Boolean) : [];
+    const hostRef = options.hostRef ?? getContext;
+    const profiles = ctxOf(hostRef)?.extensionSettings?.connectionManager?.profiles ?? [];
+    const usable = ids.length === 2
+        && new Set(ids).size === 2
+        && ids.every(id => isProfileUsable(hostRef, profiles.find(profile => profile?.id === id)));
+    if (!usable) {
+        throw new Error('Choose exactly two distinct usable connection profiles.');
     }
     return Promise.all(ids.map(id => sendUnderProfile(run, id, options)));
 }

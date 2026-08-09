@@ -1,12 +1,13 @@
 import { listComparableProfiles } from '../ab.js';
-import { willCreateChatFile } from '../apply-state.js';
+import { hasUnsavedPresetEdits, willCreateChatFile } from '../apply-state.js';
 import { CAVEAT_TEXT } from '../constants.js';
 import { button, element, errorMessage, field, formatTokens, promptField, replace, statusRegion } from '../dom.js';
 import { getContext, loadHost } from '../host.js';
 import { createCharacterPicker, createPersonaPicker } from './character-picker.js';
 import { readCharacterCard, greetingChoices } from '../experiment.js';
 import * as lab from '../lab.js';
-import { CC_API_ID, labelForApiId, PRESET_API_IDS } from '../presets.js';
+import { acquireHostOperation } from '../operations.js';
+import { CC_API_ID, labelForApiId, MODE_LABEL, modeOf, PRESET_API_IDS } from '../presets.js';
 import {
     describeDuration,
     describeEstimate,
@@ -37,6 +38,7 @@ export function createScenesTab() {
     let greetingSelect = null;
     let greetingHost = null;
     let greetingChosen = false;
+    let greetingAvatar = '';
     let previewHost = null;
     let profileSelect = null;
     let kindSelect = null;
@@ -63,9 +65,14 @@ export function createScenesTab() {
     let lastResult = null;
     let lastRun = null;
     let retrying = -1;
+    let reloadEpoch = 0;
+    let chatFileEpoch = 0;
+    let chatFileCheck = null;
+    let actionEpoch = 0;
     // The reply arriving is a text change inside one panel, not a new layout;
     // keeping the nodes lets a stream update without rebuilding the grid.
     const turnNodes = new Map();
+    const waitingSince = new WeakMap();
     let tickTimer = null;
 
     function currentMode() {
@@ -83,6 +90,7 @@ export function createScenesTab() {
     }
 
     function reload() {
+        const epoch = ++reloadEpoch;
         try {
             options = lab.readAvailableOptions(getContext());
         } catch (error) {
@@ -126,13 +134,19 @@ export function createScenesTab() {
 
         renderPresetChoices();
         renderGreetings();
-        void checkChatFile();
+        void checkChatFile(epoch);
     }
 
     /** The openings the chosen card offers, and the one the scene will use. */
     function renderGreetings() {
-        const previous = greetingSelect.value;
-        card = characterSelect.value ? readCharacterCard(characterSelect.value, getContext()) : null;
+        const avatar = characterSelect.value;
+        const changedCharacter = avatar !== greetingAvatar;
+        const previous = changedCharacter ? '' : greetingSelect.value;
+        if (changedCharacter) {
+            greetingChosen = false;
+            greetingAvatar = avatar;
+        }
+        card = avatar ? readCharacterCard(avatar, getContext()) : null;
         greetings = greetingChoices(card);
         replace(
             greetingSelect,
@@ -167,6 +181,27 @@ export function createScenesTab() {
             : currentPersona(getContext());
     }
 
+    function profileProblem(profile, presets) {
+        if (!profile?.usable) {
+            return 'Choose a usable connection profile.';
+        }
+        const modes = new Set(presets.map(preset => modeOf(preset.apiId)));
+        if (modes.size !== 1) {
+            return 'Choose presets from one completion mode.';
+        }
+        if (modes.has(profile.mode)) {
+            return '';
+        }
+        const required = [...modes][0];
+        return `Choose a ${MODE_LABEL[required]} connection profile for these ${MODE_LABEL[required]} presets.`;
+    }
+
+    function dirtyPresetProblem() {
+        return PRESET_API_IDS.some(apiId => hasUnsavedPresetEdits(getContext, apiId) === true)
+            ? 'You have unsaved changes in the preset panel. Save them before playing a scene, or selecting presets will discard them.'
+            : '';
+    }
+
     /** The scene as it will be sent, read as a conversation. */
     function renderPreview() {
         const persona = personaFor();
@@ -191,21 +226,41 @@ export function createScenesTab() {
      * never been chatted to creates a chat file for it. Say so before the
      * button is pressed rather than leaving a new file behind unannounced.
      */
-    async function checkChatFile() {
-        chatFileNote.hidden = true;
-        if (!characterSelect.value) {
-            return;
+    function checkChatFile(reloadAtStart = reloadEpoch) {
+        const epoch = ++chatFileEpoch;
+        const avatar = characterSelect.value;
+        const check = { avatar, pending: Boolean(avatar), promise: null };
+        chatFileCheck = check;
+        chatFileNote.textContent = avatar
+            ? 'Checking whether playing this character will create a chat...'
+            : '';
+        chatFileNote.hidden = !avatar;
+        updateControls();
+        if (!avatar) {
+            check.promise = Promise.resolve();
+            return check.promise;
         }
-        try {
-            const creates = await willCreateChatFile(getContext, characterSelect.value);
-            chatFileNote.hidden = !creates;
+        check.promise = (async () => {
+            let creates = false;
+            let failed = false;
+            try {
+                creates = await willCreateChatFile(getContext, avatar);
+            } catch {
+                failed = true;
+            }
+            check.pending = false;
+            if (check !== chatFileCheck || epoch !== chatFileEpoch || reloadAtStart !== reloadEpoch
+                || avatar !== characterSelect.value || !root) {
+                return;
+            }
+            // A check that cannot be made is not a reason to block the tab.
+            chatFileNote.hidden = failed || !creates;
             if (creates) {
                 chatFileNote.textContent = 'This character has no chat yet. Playing a scene opens it, which creates one. The scene itself is still never saved to it.';
             }
-        } catch {
-            // A check that cannot be made is not a reason to block the tab.
-            chatFileNote.hidden = true;
-        }
+            updateControls();
+        })();
+        return check.promise;
     }
 
     /** The presets of the chosen kind, as a list that can be ticked. */
@@ -300,21 +355,44 @@ export function createScenesTab() {
     }
 
     function updateControls() {
+        const busy = Boolean(controller);
+        const presets = chosenPresets();
         const estimate = estimateScene({
-            presets: chosenPresets(),
+            presets,
             mode: currentMode(),
             turns: writtenTurns(),
             exchanges: Number(exchangesInput.value),
             maxTokens: Number(tokensInput.value),
         });
-        estimateLine.textContent = describeEstimate(estimate);
+        const profile = profiles.find(item => item.id === profileSelect.value);
+        const modeProblem = presets.length ? profileProblem(profile, presets) : '';
+        estimateLine.textContent = `${describeEstimate(estimate)}${modeProblem ? ` ${modeProblem}` : ''}`;
+        const avatar = characterSelect.value;
+        const chatFileReady = Boolean(avatar) && chatFileCheck?.avatar === avatar && !chatFileCheck.pending;
         const ready = estimate.presets >= 2 && estimate.turns >= 1
-            && Boolean(characterSelect.value) && Boolean(profileSelect.value);
-        sendButton.disabled = !ready || Boolean(controller);
-        cancelButton.hidden = !controller;
+            && chatFileReady && !modeProblem;
+        sendButton.disabled = !ready || busy;
+        cancelButton.hidden = !busy;
+        characterPicker.node.inert = busy;
+        personaPicker.node.inert = busy;
+        for (const control of [
+            characterSelect,
+            personaSelect,
+            greetingSelect,
+            profileSelect,
+            kindSelect,
+            exchangesInput,
+            tokensInput,
+            ...modeInputs,
+            ...presetChecks.map(entry => entry.input),
+            ...turnFields.map(entry => entry.textarea),
+            ...turnsHost.querySelectorAll('button'),
+        ]) {
+            control.disabled = busy;
+        }
         // Nothing may start a second run while one is in flight, retry included.
         for (const node of output.querySelectorAll('.sbpl-scene-retry')) {
-            node.disabled = Boolean(controller);
+            node.disabled = busy;
         }
     }
 
@@ -358,44 +436,87 @@ export function createScenesTab() {
         if (controller) {
             return;
         }
-        controller = new AbortController();
-        const { signal } = controller;
-        lastResult = null;
-        replace(exportHost);
+        const presets = chosenPresets();
+        const profile = listComparableProfiles(getContext())
+            .find(item => item.id === profileSelect.value);
+        const persona = personaFor();
         // Kept as they were when the run started, so a retry repeats this run
         // rather than whatever the form says by then.
-        lastRun = {
-            presets: chosenPresets(),
+        const run = {
+            presets,
             characterAvatar: characterSelect.value,
             characterName: options.characters.find(item => item.avatar === characterSelect.value)?.name ?? '',
-            personaKey: personaSelect.value || null,
-            connectionProfileId: profileSelect.value,
-            connectionName: profiles.find(profile => profile.id === profileSelect.value)?.name ?? '',
-            connectionModel: profiles.find(profile => profile.id === profileSelect.value)?.model ?? '',
+            personaKey: persona.key || null,
+            connectionProfileId: profile?.id ?? '',
+            connectionName: profile?.name ?? '',
+            connectionModel: profile?.model ?? '',
             greeting: chosenGreeting(),
             mode: currentMode(),
             turns: writtenTurns(),
             exchanges: Number(exchangesInput.value),
             maxTokens: Number(tokensInput.value),
         };
+        const estimate = estimateScene(run);
+        if (estimate.presets < 2 || estimate.turns < 1 || !run.characterAvatar) {
+            status.textContent = describeEstimate(estimate);
+            return;
+        }
+        const modeProblem = profileProblem(profile, presets);
+        if (modeProblem) {
+            status.textContent = modeProblem;
+            return;
+        }
+        let check = chatFileCheck;
+        if (check?.avatar !== run.characterAvatar) {
+            void checkChatFile();
+            check = chatFileCheck;
+        }
+        const requestController = new AbortController();
+        controller = requestController;
+        const epoch = ++actionEpoch;
+        let lease = null;
         updateControls();
-        replace(output);
-        status.textContent = 'Building and sending the first turn. This uses tokens.';
-        startTicking();
 
         try {
+            await check.promise;
+            if (epoch !== actionEpoch || controller !== requestController || !root
+                || check !== chatFileCheck || check.pending
+                || check.avatar !== run.characterAvatar || characterSelect.value !== run.characterAvatar) {
+                return;
+            }
+            lease = acquireHostOperation('a scene comparison', { signal: requestController.signal });
+            const presetProblem = dirtyPresetProblem();
+            if (presetProblem) {
+                status.textContent = presetProblem;
+                return;
+            }
+            lastRun = run;
+            lastResult = null;
+            replace(exportHost);
+            replace(output);
+            status.textContent = 'Building and sending the first turn. This uses tokens.';
+            startTicking();
             const host = await loadHost();
             const result = await runSceneComparison({
-                ...lastRun,
+                ...run,
                 live: true,
                 host,
-                signal,
-                onUpdate: handleUpdate,
+                signal: lease.signal,
+                onUpdate: (event) => {
+                    if (epoch === actionEpoch) {
+                        handleUpdate(event);
+                    }
+                },
                 onProgress: (event) => {
-                    status.textContent = `${event.presetName}: turn ${event.turn} of ${event.turnTotal}`
-                        + ` (preset ${event.presetIndex} of ${event.presetTotal})`;
+                    if (epoch === actionEpoch) {
+                        status.textContent = `${event.presetName}: turn ${event.turn} of ${event.turnTotal}`
+                            + ` (preset ${event.presetIndex} of ${event.presetTotal})`;
+                    }
                 },
             });
+            if (epoch !== actionEpoch) {
+                return;
+            }
             lastResult = result;
             renderColumns(result);
             const parts = [result.aborted ? 'Stopped.' : 'Finished.'];
@@ -404,13 +525,34 @@ export function createScenesTab() {
                 : 'Your character, preset and connection have been put back.');
             status.textContent = parts.join(' ');
         } catch (error) {
-            status.textContent = `The scene could not be compared: ${errorMessage(error)}`;
+            if (epoch === actionEpoch) {
+                status.textContent = error?.code === 'SBPL_BUSY'
+                    ? errorMessage(error)
+                    : `The scene could not be compared: ${errorMessage(error)}`;
+            }
         } finally {
-            stopTicking();
-            controller = null;
-            updateControls();
-            renderExportBar();
+            lease?.release();
+            if (epoch === actionEpoch && controller === requestController) {
+                stopTicking();
+                controller = null;
+                updateControls();
+                renderExportBar();
+            }
         }
+    }
+
+    function recomputeCompletion(aborted) {
+        const completedRequests = lastResult.columns.reduce(
+            (total, column) => total + (column.turns ?? []).filter(turn => !turn.waiting).length,
+            0,
+        );
+        const expectedRequests = estimateScene(lastRun).requests;
+        Object.assign(lastResult, {
+            completedRequests,
+            expectedRequests,
+            aborted: Boolean(aborted),
+            incomplete: Boolean(aborted) || completedRequests < expectedRequests,
+        });
     }
 
     /**
@@ -422,43 +564,77 @@ export function createScenesTab() {
         if (controller || !lastRun) {
             return;
         }
-        const target = lastResult?.columns?.[index];
+        const baseResult = lastResult;
+        const target = baseResult?.columns?.[index];
         if (!target) {
             return;
         }
-        controller = new AbortController();
+        const run = { ...lastRun, presets: [target.preset] };
+        const profile = listComparableProfiles(getContext())
+            .find(item => item.id === run.connectionProfileId);
+        const modeProblem = profileProblem(profile, run.presets);
+        if (modeProblem) {
+            status.textContent = modeProblem;
+            return;
+        }
+        const requestController = new AbortController();
+        controller = requestController;
+        const epoch = ++actionEpoch;
+        let lease = null;
         retrying = index;
         updateControls();
         status.textContent = `Trying ${target.label} again. This uses tokens.`;
-        startTicking();
 
         try {
+            lease = acquireHostOperation('a scene retry', { signal: requestController.signal });
+            const presetProblem = dirtyPresetProblem();
+            if (presetProblem) {
+                status.textContent = presetProblem;
+                return;
+            }
+            startTicking();
             const host = await loadHost();
             const result = await runSceneComparison({
-                ...lastRun,
-                presets: [target.preset],
+                ...run,
                 live: true,
                 host,
-                signal: controller.signal,
+                signal: lease.signal,
                 onUpdate: ({ columns, streaming }) => {
-                    const merged = lastResult.columns.slice();
-                    merged[index] = columns[0] ?? merged[index];
-                    handleUpdate({ columns: merged, streaming });
+                    if (epoch === actionEpoch) {
+                        const merged = (lastResult?.columns ?? baseResult.columns).slice();
+                        merged[index] = columns[0] ?? merged[index];
+                        handleUpdate({ columns: merged, streaming });
+                    }
                 },
             });
+            if (epoch !== actionEpoch) {
+                return;
+            }
             lastResult.columns[index] = result.columns[0] ?? target;
+            recomputeCompletion(result.aborted);
             renderColumns(lastResult);
-            status.textContent = result.restoreProblems.length
-                ? `Tried again, but your settings could not be fully put back: ${result.restoreProblems.join('; ')}.`
-                : `Tried ${target.label} again. Your settings have been put back.`;
+            status.textContent = result.aborted
+                ? (result.restoreProblems.length
+                    ? `Stopped, but your settings could not be fully put back: ${result.restoreProblems.join('; ')}.`
+                    : 'Stopped. Your settings have been put back.')
+                : (result.restoreProblems.length
+                    ? `Tried again, but your settings could not be fully put back: ${result.restoreProblems.join('; ')}.`
+                    : `Tried ${target.label} again. Your settings have been put back.`);
         } catch (error) {
-            status.textContent = `That preset could not be tried again: ${errorMessage(error)}`;
+            if (epoch === actionEpoch) {
+                status.textContent = error?.code === 'SBPL_BUSY'
+                    ? errorMessage(error)
+                    : `That preset could not be tried again: ${errorMessage(error)}`;
+            }
         } finally {
-            stopTicking();
-            controller = null;
-            retrying = -1;
-            updateControls();
-            renderExportBar();
+            lease?.release();
+            if (epoch === actionEpoch && controller === requestController) {
+                stopTicking();
+                controller = null;
+                retrying = -1;
+                updateControls();
+                renderExportBar();
+            }
         }
     }
 
@@ -471,7 +647,8 @@ export function createScenesTab() {
         if (controller || !lastRun) {
             return;
         }
-        const target = lastResult?.columns?.[columnIndex];
+        const baseResult = lastResult;
+        const target = baseResult?.columns?.[columnIndex];
         if (!target) {
             return;
         }
@@ -480,15 +657,29 @@ export function createScenesTab() {
             { role: 'user', text: turn.userText },
             { role: 'assistant', text: turn.text },
         ]);
-
-        controller = new AbortController();
+        const run = {
+            ...lastRun,
+            presets: [target.preset],
+            startAt: turnNumber,
+            history,
+        };
+        const profile = listComparableProfiles(getContext())
+            .find(item => item.id === run.connectionProfileId);
+        const modeProblem = profileProblem(profile, run.presets);
+        if (modeProblem) {
+            status.textContent = modeProblem;
+            return;
+        }
+        const requestController = new AbortController();
+        controller = requestController;
+        const epoch = ++actionEpoch;
+        let lease = null;
         retrying = columnIndex;
         updateControls();
         status.textContent = `Playing ${target.label} again from turn ${turnNumber}. This uses tokens.`;
-        startTicking();
 
         const merge = (fresh) => {
-            const merged = lastResult.columns.slice();
+            const merged = (lastResult?.columns ?? baseResult.columns).slice();
             merged[columnIndex] = fresh
                 ? {
                     ...fresh,
@@ -502,39 +693,66 @@ export function createScenesTab() {
         };
 
         try {
+            lease = acquireHostOperation('a scene retry', { signal: requestController.signal });
+            const presetProblem = dirtyPresetProblem();
+            if (presetProblem) {
+                status.textContent = presetProblem;
+                return;
+            }
+            startTicking();
             const host = await loadHost();
             const result = await runSceneComparison({
-                ...lastRun,
-                presets: [target.preset],
-                startAt: turnNumber,
-                history,
+                ...run,
                 live: true,
                 host,
-                signal: controller.signal,
+                signal: lease.signal,
                 onUpdate: ({ columns, streaming }) => {
-                    handleUpdate({ columns: merge(columns[0]), streaming });
+                    if (epoch === actionEpoch) {
+                        handleUpdate({ columns: merge(columns[0]), streaming });
+                    }
                 },
             });
+            if (epoch !== actionEpoch) {
+                return;
+            }
             lastResult.columns = merge(result.columns[0]);
+            recomputeCompletion(result.aborted);
             renderColumns(lastResult);
-            status.textContent = result.restoreProblems.length
-                ? `Played turn ${turnNumber} again, but your settings could not be fully put back: ${result.restoreProblems.join('; ')}.`
-                : `Played ${target.label} again from turn ${turnNumber}. Your settings have been put back.`;
+            status.textContent = result.aborted
+                ? (result.restoreProblems.length
+                    ? `Stopped, but your settings could not be fully put back: ${result.restoreProblems.join('; ')}.`
+                    : 'Stopped. Your settings have been put back.')
+                : (result.restoreProblems.length
+                    ? `Played turn ${turnNumber} again, but your settings could not be fully put back: ${result.restoreProblems.join('; ')}.`
+                    : `Played ${target.label} again from turn ${turnNumber}. Your settings have been put back.`);
         } catch (error) {
-            status.textContent = `That turn could not be played again: ${errorMessage(error)}`;
+            if (epoch === actionEpoch) {
+                status.textContent = error?.code === 'SBPL_BUSY'
+                    ? errorMessage(error)
+                    : `That turn could not be played again: ${errorMessage(error)}`;
+            }
         } finally {
-            stopTicking();
-            controller = null;
-            retrying = -1;
-            updateControls();
-            renderExportBar();
+            lease?.release();
+            if (epoch === actionEpoch && controller === requestController) {
+                stopTicking();
+                controller = null;
+                retrying = -1;
+                updateControls();
+                renderExportBar();
+            }
         }
     }
 
     function turnLabel(turn) {
+        if (turn.waiting && !waitingSince.has(turn)) {
+            waitingSince.set(turn, Date.now() - (Number(turn.durationMs) || 0));
+        }
+        const durationMs = turn.waiting
+            ? Math.max(Number(turn.durationMs) || 0, Date.now() - waitingSince.get(turn))
+            : turn.durationMs;
         const timing = turn.waiting
-            ? `waiting ${describeDuration(turn.durationMs)}`
-            : describeDuration(turn.durationMs);
+            ? `waiting ${describeDuration(durationMs)}`
+            : describeDuration(durationMs);
         return `Turn ${turn.index} · ${timing} · prompt ${formatTokens(turn.promptTokens)} tokens`;
     }
 
@@ -644,7 +862,7 @@ export function createScenesTab() {
             button('Save as text', () => save('txt'), { className: 'menu_button sbpl-button' }),
             button('Save as web page', () => save('html'), {
                 className: 'menu_button sbpl-button',
-                title: 'Keeps any markup a reply carried, such as a tracker or a styled card',
+                title: 'Keeps safe text formatting; model-written styles, links, forms, and scripts are removed',
             }),
         );
     }
@@ -656,7 +874,6 @@ export function createScenesTab() {
         characterSelect = characterPicker.input;
         characterSelect.addEventListener('change', () => {
             renderGreetings();
-            updateControls();
             void checkChatFile();
         });
 
@@ -682,7 +899,8 @@ export function createScenesTab() {
             hint: 'The greeting every preset answers. Cards can carry more than one.',
         });
         previewHost = element('div', { className: 'sbpl-preview' });
-        chatFileNote = element('p', { className: 'sbpl-warning-text' });
+        chatFileNote = statusRegion('');
+        chatFileNote.classList.add('sbpl-warning-text');
         chatFileNote.hidden = true;
         profileSelect = element('select', { className: 'text_pole sbpl-select', attributes: { 'aria-label': 'Connection profile' } });
         profileSelect.addEventListener('change', updateControls);
@@ -788,7 +1006,12 @@ export function createScenesTab() {
             }
         },
         dispose() {
+            reloadEpoch += 1;
+            chatFileEpoch += 1;
+            actionEpoch += 1;
             controller?.abort();
+            controller = null;
+            retrying = -1;
             stopTicking();
             turnNodes.clear();
             root?.remove();

@@ -10,12 +10,73 @@ import { ctxOf } from '../host.js';
 
 const SETTINGS_KEY = 'promptTags';
 
+function settingsOf(hostRef) {
+    const settings = ctxOf(hostRef)?.extensionSettings?.[SETTINGS_KEY];
+    return settings && typeof settings === 'object' ? settings : null;
+}
+
+function extensionDisabled(hostRef) {
+    const disabled = ctxOf(hostRef)?.extensionSettings?.disabledExtensions;
+    return Array.isArray(disabled) && disabled.some((name) => {
+        const normalized = String(name ?? '').replace(/^third-party\//i, '').toLowerCase();
+        return normalized === 'sillybunny-prompttags' || normalized === 'prompttags';
+    });
+}
+
+function profileEntry(settings, reference) {
+    const profiles = settings?.profiles;
+    if (!profiles || typeof profiles !== 'object') {
+        return null;
+    }
+    const profileId = typeof reference?.profileId === 'string' ? reference.profileId : '';
+    const profileName = typeof reference?.profile === 'string'
+        ? reference.profile
+        : (typeof reference?.profileName === 'string' ? reference.profileName : '');
+    if (profileId) {
+        const found = Object.entries(profiles).find(([, profile]) => profile?.id === profileId);
+        if (found) {
+            return found;
+        }
+    }
+    return profileName && profiles[profileName] ? [profileName, profiles[profileName]] : null;
+}
+
+function presetPromptTags(context) {
+    if (context?.mainApi !== 'openai') {
+        return null;
+    }
+    try {
+        return context?.getPresetManager?.('openai')?.readPresetExtensionField?.({ path: SETTINGS_KEY }) ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function effectiveProfile(context, settings) {
+    const records = [
+        ['chat', context?.chatMetadata?.[SETTINGS_KEY]],
+        ['character', context?.characters?.[context?.characterId]?.data?.extensions?.[SETTINGS_KEY]],
+        ['preset', presetPromptTags(context)],
+    ];
+    for (const [scope, record] of records) {
+        const found = profileEntry(settings, record);
+        if (found) {
+            return { scope, name: found[0], profile: found[1] };
+        }
+    }
+    const found = profileEntry(settings, {
+        profileId: settings.activeProfileId,
+        profileName: settings.activeProfile,
+    }) ?? Object.entries(settings.profiles ?? {})[0];
+    return found ? { scope: 'global', name: found[0], profile: found[1] } : null;
+}
+
 export function isPromptTagsAvailable(hostRef) {
-    return Boolean(ctxOf(hostRef)?.extensionSettings?.[SETTINGS_KEY]);
+    return Boolean(settingsOf(hostRef)) && !extensionDisabled(hostRef);
 }
 
 export function listPromptTagsProfiles(hostRef) {
-    const profiles = ctxOf(hostRef)?.extensionSettings?.[SETTINGS_KEY]?.profiles;
+    const profiles = settingsOf(hostRef)?.profiles;
     if (!profiles || typeof profiles !== 'object') {
         return [];
     }
@@ -25,26 +86,49 @@ export function listPromptTagsProfiles(hostRef) {
     }));
 }
 
+/** Global values that the supported Prompt Tags slash commands can restore. */
+export function readPromptTagsGlobalState(hostRef) {
+    const settings = settingsOf(hostRef);
+    if (!settings) {
+        return null;
+    }
+    const active = profileEntry(settings, {
+        profileId: settings.activeProfileId,
+        profileName: settings.activeProfile,
+    });
+    return {
+        enabled: settings.enabled !== false && !extensionDisabled(hostRef),
+        profileName: active?.[0] ?? String(settings.activeProfile ?? ''),
+        profileId: String(active?.[1]?.id ?? settings.activeProfileId ?? ''),
+        valid: Boolean(active),
+    };
+}
+
 /**
  * Records which Prompt Tags profile was in force, and which sections it wraps.
  * The wrapping itself is already visible in the captured prompt, because Prompt
  * Tags rewrites the prompt while it is being built.
  */
 export function readPromptTags(hostRef) {
-    const settings = ctxOf(hostRef)?.extensionSettings?.[SETTINGS_KEY];
+    const context = ctxOf(hostRef);
+    const settings = settingsOf(hostRef);
     if (!settings) {
         return null;
     }
-    const activeName = typeof settings.activeProfile === 'string' ? settings.activeProfile : '';
-    const profile = settings.profiles?.[activeName] ?? null;
-    const enabledSections = Object.entries(profile?.rules ?? {})
+    const active = effectiveProfile(context, settings);
+    const presetRules = presetPromptTags(context)?.rules;
+    const rules = presetRules && typeof presetRules === 'object'
+        ? { ...(active?.profile?.rules ?? {}), ...presetRules }
+        : (active?.profile?.rules ?? {});
+    const enabledSections = Object.entries(rules)
         .filter(([, rule]) => rule?.enabled)
         .map(([section]) => section)
         .sort();
     return {
-        enabled: settings.enabled !== false,
-        profileName: activeName,
-        profileId: typeof settings.activeProfileId === 'string' ? settings.activeProfileId : (profile?.id ?? ''),
+        enabled: settings.enabled !== false && !extensionDisabled(hostRef),
+        profileName: active?.name ?? '',
+        profileId: String(active?.profile?.id ?? ''),
+        scope: active?.scope ?? 'global',
         enabledSections,
     };
 }

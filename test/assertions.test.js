@@ -22,12 +22,44 @@ function run(patch = {}) {
     };
 }
 
+async function withRegexWorker(postMessage, callback) {
+    const previous = globalThis.Worker;
+    globalThis.Worker = class {
+        postMessage(data) { postMessage.call(this, data); }
+        terminate() { this.terminated = true; }
+    };
+    try {
+        return await callback();
+    } finally {
+        if (previous === undefined) {
+            delete globalThis.Worker;
+        } else {
+            globalThis.Worker = previous;
+        }
+    }
+}
+
 test('finalText joins chat completion messages', () => {
     assert.equal(finalText(run()), 'You are Aqua.\nHello there.');
 });
 
 test('finalText prefers a text completion prompt when there is one', () => {
-    assert.equal(finalText(run({ capture: { combinedPrompt: 'One long prompt.' } })), 'One long prompt.');
+    assert.equal(finalText(run({ capture: { messages: null, combinedPrompt: 'One long prompt.' } })), 'One long prompt.');
+});
+
+test('finalText reads text parts and ignores non-text multimodal parts', () => {
+    assert.equal(finalText(run({
+        capture: {
+            messages: [{
+                role: 'user',
+                content: [
+                    { type: 'text', text: 'Look here.' },
+                    { type: 'image_url', image_url: { url: 'image.png' } },
+                    { type: 'text', text: 'Then here.' },
+                ],
+            }],
+        },
+    })), 'Look here.\nThen here.');
 });
 
 test('finalText copes with an empty capture', () => {
@@ -143,11 +175,16 @@ test('content-match can require that text is absent', () => {
     assert.match(failing.message, /should not appear/);
 });
 
-test('content-match supports a search pattern', () => {
-    assert.equal(
-        evaluateAssertion({ type: ASSERTION.CONTENT_MATCH, mode: 'regex', value: 'You are \\w+' }, run()).pass,
-        true,
-    );
+test('content-match runs a search pattern in a Worker', async () => {
+    await withRegexWorker(function () {
+        queueMicrotask(() => this.onmessage({ data: { found: true } }));
+    }, async () => {
+        const result = await evaluateAssertion(
+            { type: ASSERTION.CONTENT_MATCH, mode: 'regex', value: 'You are \\w+' },
+            run(),
+        );
+        assert.equal(result.pass, true);
+    });
 });
 
 test('content-match explains an invalid search pattern instead of failing the run', () => {
@@ -164,6 +201,61 @@ test('content-match leaves an oversized regex unchecked', () => {
     }, run());
     assert.equal(result.pass, null);
     assert.match(result.message, /too long/);
+});
+
+test('content-match rejects every regex without safe Worker execution', () => {
+    for (const value of [
+        'a+$',
+        '(a+)+$',
+        '(a|aa)+$',
+        '(a+)\\1',
+        'a*a*b',
+        '^a{50000}$',
+        '^a{1,3}b{1,3}$',
+        '^a{0,50000}a{0,50000}b$',
+    ]) {
+        const result = evaluateAssertion({ type: ASSERTION.CONTENT_MATCH, mode: 'regex', value }, run({
+            capture: { messages: [{ role: 'user', content: `${'a'.repeat(100_000)}!` }] },
+        }));
+        assert.equal(result.pass, null);
+        assert.match(result.message, /safe deadline/);
+    }
+});
+
+test('content-match terminates a timed-out Worker and stays unchecked', async () => {
+    let worker;
+    await withRegexWorker(function () {
+        worker = this;
+    }, async () => {
+        const result = await evaluateAssertion({
+            type: ASSERTION.CONTENT_MATCH,
+            mode: 'regex',
+            value: 'a+$',
+        }, run({ capture: { messages: [{ role: 'user', content: `${'a'.repeat(100_000)}!` }] } }));
+        assert.equal(result.pass, null);
+        assert.match(result.message, /took too long.*stopped/);
+        assert.equal(worker.terminated, true);
+    });
+});
+
+test('content-match leaves a Worker startup failure unchecked', async () => {
+    const previous = globalThis.Worker;
+    globalThis.Worker = class { constructor() { throw new Error('blocked'); } };
+    try {
+        const result = await evaluateAssertion({
+            type: ASSERTION.CONTENT_MATCH,
+            mode: 'regex',
+            value: '^Aqua{1,3}$',
+        }, run());
+        assert.equal(result.pass, null);
+        assert.match(result.message, /could not be run safely/);
+    } finally {
+        if (previous === undefined) {
+            delete globalThis.Worker;
+        } else {
+            globalThis.Worker = previous;
+        }
+    }
 });
 
 test('content-match reports a missing section rather than passing', () => {
@@ -220,6 +312,11 @@ test('wi-activated reports no lorebook activity rather than failing', () => {
     assert.match(result.message, /could not be checked/);
 });
 
+test('wi-activated leaves a negated check unchecked when no scan ran', () => {
+    const result = evaluateAssertion({ type: ASSERTION.WI_ACTIVATED, entryKey: 'dragon', negate: true }, run());
+    assert.equal(result.pass, null);
+});
+
 test('wi-activated fails red when a scan ran and the entry stayed out', () => {
     // A recorded pass that activated nothing is a definite answer: the scan
     // happened and the entry was not used.
@@ -271,6 +368,35 @@ test('cache-prefix-stable tells a short conversation apart from a missing depth'
     assert.doesNotMatch(result.message, /Set it in Prompting Lab settings/);
 });
 
+test('incomplete observed dry-run metrics leave every assertion unchecked', () => {
+    const incomplete = run({
+        capture: { metricsComplete: false },
+        cache: { source: 'manual', predictedBreakpoints: [1], volatileSpans: [] },
+    });
+    const assertions = [
+        { type: ASSERTION.SECTION_PRESENT, section: 'main' },
+        { type: ASSERTION.SECTION_ABSENT, section: 'jailbreak' },
+        { type: ASSERTION.SECTION_UNIQUE, section: 'main' },
+        { type: ASSERTION.TOKEN_CEILING, scope: 'total', max: 100 },
+        { type: ASSERTION.CACHE_PREFIX_STABLE },
+        { type: ASSERTION.CONTENT_MATCH, scope: 'main', value: 'Aqua' },
+        { type: ASSERTION.CONTENT_MATCH, scope: 'final', value: 'Aqua' },
+        { type: ASSERTION.WI_ACTIVATED, entryKey: 'dragon' },
+    ];
+    for (const assertion of assertions) {
+        const result = evaluateAssertion(assertion, incomplete);
+        assert.equal(result.pass, null, assertion.type);
+        assert.match(result.message, /observed dry-run prompt/i);
+    }
+});
+
+test('an assertion-free inexact capture still makes the run unchecked', async () => {
+    const results = await evaluateAssertions([], run({ capture: { metricsComplete: false } }));
+    assert.equal(results.length, 1);
+    assert.equal(results[0].type, 'capture-exactness');
+    assert.equal(results[0].pass, null);
+});
+
 /* ------------------------------------------------------------ plumbing */
 
 test('an unknown check type is reported, not silently passed', () => {
@@ -279,8 +405,8 @@ test('an unknown check type is reported, not silently passed', () => {
     assert.match(result.message, /not supported/);
 });
 
-test('evaluateAssertions numbers every result', () => {
-    const results = evaluateAssertions([
+test('evaluateAssertions numbers every result', async () => {
+    const results = await evaluateAssertions([
         { type: ASSERTION.SECTION_PRESENT, section: 'main' },
         { type: ASSERTION.SECTION_PRESENT, section: 'jailbreak' },
     ], run());

@@ -47,6 +47,7 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
     };
     const panels = new Map();
     const tabButtons = new Map();
+    const dirtyTabs = new Set();
 
     let root = null;
     let tabList = null;
@@ -57,6 +58,7 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
     let disposed = false;
     let readoutPending = false;
     let readoutStale = false;
+    let lastFocused = null;
 
     function notifyChange() {
         onStateChange?.();
@@ -162,6 +164,16 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
         panelHost?.setAttribute('aria-labelledby', `sbpl-tab-${state.activeTab}`);
     }
 
+    function focusActiveControl() {
+        const tab = tabButtons.get(state.activeTab);
+        const target = tab?.getClientRects().length
+            ? tab
+            : selectMobile?.getClientRects().length
+                ? selectMobile
+                : panelHost;
+        target?.focus({ preventScroll: true });
+    }
+
     function setActiveTab(id, { focus = false } = {}) {
         if (!TAB_ORDER.includes(id)) {
             return;
@@ -170,9 +182,12 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
         updateSettings({ lastTab: id });
         syncTabControls();
         renderActivePanel();
+        if (dirtyTabs.delete(id)) {
+            panels.get(id)?.refresh?.('activated');
+        }
         void refreshReadout();
         if (focus) {
-            tabButtons.get(id)?.focus();
+            focusActiveControl();
         }
         notifyChange();
     }
@@ -309,6 +324,9 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
 
         root.append(availabilityNote, nav, main);
         root.__availabilityNote = availabilityNote;
+        root.addEventListener('focusin', (event) => {
+            lastFocused = event.target;
+        });
         applyLayout();
         syncTabControls();
         renderActivePanel();
@@ -328,6 +346,13 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
     }
 
     function applyAvailability() {
+        const unavailable = state.availability?.ok === false;
+        panelHost?.toggleAttribute('inert', unavailable);
+        if (unavailable) {
+            panelHost?.setAttribute('aria-disabled', 'true');
+        } else {
+            panelHost?.removeAttribute('aria-disabled');
+        }
         const note = root?.__availabilityNote;
         if (!note) {
             return;
@@ -353,6 +378,7 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
         },
         registerTab(id, tabController) {
             panels.set(id, tabController);
+            tabController.setAvailability?.(state.availability);
             if (id === state.activeTab) {
                 renderActivePanel();
             }
@@ -372,7 +398,16 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
                 applyLayout();
             }
             if (root.parentElement !== host) {
+                const active = document.activeElement;
+                const restoreFocus = root.contains(active)
+                    || (!root.parentElement?.isConnected
+                        && (!active || active === document.body || active === document.documentElement))
+                    ? lastFocused
+                    : null;
                 host.append(root);
+                if (restoreFocus?.isConnected && !restoreFocus.closest('[inert]')) {
+                    restoreFocus.focus({ preventScroll: true });
+                }
             }
             state.open = true;
             applyAvailability();
@@ -382,6 +417,9 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
         },
         setAvailability(value) {
             state.availability = value;
+            for (const panel of panels.values()) {
+                panel.setAvailability?.(value);
+            }
             applyAvailability();
             notifyChange();
         },
@@ -390,14 +428,21 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
                 return;
             }
             void refreshReadout();
-            panels.get(state.activeTab)?.refresh?.(reason);
+            for (const [id, panel] of panels) {
+                if (id === state.activeTab) {
+                    dirtyTabs.delete(id);
+                    panel.refresh?.(reason);
+                } else {
+                    dirtyTabs.add(id);
+                }
+            }
         },
         /** Re-counts the rail's inventory after another tab changed something. */
         refreshReadout() {
             void refreshReadout();
         },
         focus() {
-            tabButtons.get(state.activeTab)?.focus();
+            focusActiveControl();
         },
         dispose() {
             if (disposed) {
@@ -409,6 +454,7 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
             }
             panels.clear();
             tabButtons.clear();
+            dirtyTabs.clear();
             root?.remove();
             root = null;
             tabList = null;
@@ -416,6 +462,7 @@ export function createWorkbench({ lifetimeSignal = null, onStateChange = null } 
             panelHead = null;
             readout = null;
             selectMobile = null;
+            lastFocused = null;
             state.open = false;
         },
     };

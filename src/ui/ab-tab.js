@@ -30,9 +30,24 @@ export function createAbTab() {
     let runIndex = [];
     let profiles = [];
     let controller = null;
+    let reloadEpoch = 0;
+    let actionEpoch = 0;
 
-    async function reload() {
-        suites = await storage.listSuites();
+    function startReload(task = reload) {
+        const epoch = ++reloadEpoch;
+        void task(epoch).catch((error) => {
+            if (epoch === reloadEpoch && status) {
+                status.textContent = `Saved runs could not be loaded: ${errorMessage(error)}`;
+            }
+        });
+    }
+
+    async function reload(epoch) {
+        const nextSuites = await storage.listSuites();
+        if (epoch !== reloadEpoch) {
+            return;
+        }
+        suites = nextSuites;
         activeSuite = suites.find(suite => suite.id === activeSuite?.id) ?? suites[0] ?? null;
         replace(suiteSelect, ...suites.map(suite => element('option', {
             text: suite.name,
@@ -41,12 +56,19 @@ export function createAbTab() {
         if (activeSuite) {
             suiteSelect.value = activeSuite.id;
         }
-        await reloadCases();
-        loadProfiles();
+        await reloadCases(epoch);
+        if (epoch === reloadEpoch) {
+            loadProfiles();
+        }
     }
 
-    async function reloadCases() {
-        cases = activeSuite ? await lab.getSuiteCases(activeSuite) : [];
+    async function reloadCases(epoch) {
+        const suite = activeSuite;
+        const nextCases = suite ? await lab.getSuiteCases(suite) : [];
+        if (epoch !== reloadEpoch) {
+            return;
+        }
+        cases = nextCases;
         activeCase = cases.find(item => item.id === activeCase?.id) ?? cases[0] ?? null;
         replace(caseSelect, ...cases.map(item => element('option', {
             text: item.name,
@@ -55,12 +77,17 @@ export function createAbTab() {
         if (activeCase) {
             caseSelect.value = activeCase.id;
         }
-        await reloadRuns();
+        await reloadRuns(epoch);
     }
 
-    async function reloadRuns() {
+    async function reloadRuns(epoch) {
         const previous = runSelect.value;
-        runIndex = activeCase ? await storage.listRuns(activeCase.id) : [];
+        const testCase = activeCase;
+        const nextRuns = testCase ? await storage.listRuns(testCase.id) : [];
+        if (epoch !== reloadEpoch) {
+            return;
+        }
+        runIndex = nextRuns;
         replace(runSelect, ...runIndex.map(entry => element('option', {
             text: describeWhen(entry.startedAt),
             attributes: { value: entry.id },
@@ -97,6 +124,12 @@ export function createAbTab() {
         updateControls();
     }
 
+    function selectedProfiles() {
+        const selected = [leftSelect.value, rightSelect.value]
+            .map(id => profiles.find(profile => profile.id === id && profile.usable));
+        return selected.every(Boolean) && selected[0].id !== selected[1].id ? selected : [];
+    }
+
     function describeWhen(value) {
         try {
             return value ? new Date(value).toLocaleString() : 'Unknown time';
@@ -106,9 +139,12 @@ export function createAbTab() {
     }
 
     function updateControls() {
-        const ready = Boolean(runIndex.length && profiles.some(profile => profile.usable));
-        sendButton.disabled = !ready || Boolean(controller);
-        cancelButton.hidden = !controller;
+        const busy = Boolean(controller);
+        sendButton.disabled = !runIndex.length || selectedProfiles().length !== 2 || busy;
+        cancelButton.hidden = !busy;
+        for (const control of [suiteSelect, caseSelect, runSelect, leftSelect, rightSelect, tokensInput]) {
+            control.disabled = busy;
+        }
     }
 
     async function send() {
@@ -117,47 +153,66 @@ export function createAbTab() {
         if (controller || !runSelect.value) {
             return;
         }
-        controller = new AbortController();
-        const { signal } = controller;
+        const runId = runSelect.value;
+        const chosen = selectedProfiles();
+        if (chosen.length !== 2) {
+            status.textContent = 'Choose exactly two distinct usable connection profiles.';
+            return;
+        }
+        const profileIds = chosen.map(profile => profile.id);
+        const maxTokens = updateSettings({ abMaxTokens: Number(tokensInput.value) }).abMaxTokens;
+        tokensInput.value = String(maxTokens);
+        const requestController = new AbortController();
+        controller = requestController;
+        const { signal } = requestController;
+        const epoch = ++actionEpoch;
         updateControls();
 
         try {
-            const run = await storage.getRun(runSelect.value);
+            const run = await storage.getRun(runId);
+            if (epoch !== actionEpoch) {
+                return;
+            }
             if (!run) {
                 status.textContent = 'That run could not be loaded.';
                 return;
             }
-            const ids = [leftSelect.value, rightSelect.value].filter(Boolean);
-            if (!ids.length) {
-                status.textContent = 'Choose at least one connection profile.';
+            if (signal.aborted) {
+                status.textContent = 'Stopped.';
                 return;
             }
 
             replace(output);
             status.textContent = 'Waiting for replies. This sends the prompt and uses tokens.';
-            const maxTokens = getSettings().abMaxTokens;
-            const replies = await compareProfiles(run, ids, {
+            const replies = await compareProfiles(run, profileIds, {
                 maxTokens,
                 signal,
             });
-            renderReplies(run, replies);
+            if (epoch !== actionEpoch) {
+                return;
+            }
+            renderReplies(run, replies, chosen);
             status.textContent = signal.aborted ? 'Stopped.' : 'Finished.';
         } catch (error) {
-            status.textContent = `The replies could not be fetched: ${errorMessage(error)}`;
+            if (epoch === actionEpoch) {
+                status.textContent = `The replies could not be fetched: ${errorMessage(error)}`;
+            }
         } finally {
-            controller = null;
-            updateControls();
+            if (epoch === actionEpoch && controller === requestController) {
+                controller = null;
+                updateControls();
+            }
         }
     }
 
-    function renderReplies(run, replies) {
+    function renderReplies(run, replies, chosen) {
         const note = element('p', { className: 'sbpl-status' });
         note.textContent = `Both replies used the same prompt of ${formatTokens(run.capture?.tokenTable?.total ?? 0)} tokens.`;
         output.append(note);
 
         const grid = element('div', { className: 'sbpl-ab-grid' });
         for (const reply of replies) {
-            const profile = profiles.find(item => item.id === reply.profileId);
+            const profile = chosen.find(item => item.id === reply.profileId);
             const panel = element('section', { className: 'sbpl-ab-panel' });
             panel.append(element('h4', {
                 className: 'sbpl-ab-title',
@@ -179,20 +234,22 @@ export function createAbTab() {
         root = element('div', { className: 'sbpl-ab-tab' });
 
         suiteSelect = element('select', { className: 'text_pole sbpl-select', attributes: { 'aria-label': 'Suite' } });
-        suiteSelect.addEventListener('change', async () => {
+        suiteSelect.addEventListener('change', () => {
             activeSuite = suites.find(suite => suite.id === suiteSelect.value) ?? null;
             activeCase = null;
-            await reloadCases();
+            startReload(reloadCases);
         });
         caseSelect = element('select', { className: 'text_pole sbpl-select', attributes: { 'aria-label': 'Test case' } });
-        caseSelect.addEventListener('change', async () => {
+        caseSelect.addEventListener('change', () => {
             activeCase = cases.find(item => item.id === caseSelect.value) ?? null;
-            await reloadRuns();
+            startReload(reloadRuns);
         });
         runSelect = element('select', { className: 'text_pole sbpl-select', attributes: { 'aria-label': 'Run' } });
 
         leftSelect = element('select', { className: 'text_pole sbpl-select', attributes: { 'aria-label': 'First connection profile' } });
         rightSelect = element('select', { className: 'text_pole sbpl-select', attributes: { 'aria-label': 'Second connection profile' } });
+        leftSelect.addEventListener('change', updateControls);
+        rightSelect.addEventListener('change', updateControls);
 
         tokensInput = element('input', {
             className: 'text_pole sbpl-input',
@@ -224,13 +281,14 @@ export function createAbTab() {
         root.append(
             element('p', {
                 className: 'sbpl-settings-note',
-                text: 'This sends one saved prompt through two connections and compares their replies. Unlike prompt tests, it uses tokens. Nothing is added to any chat, and your active connection does not change.',
+                text: 'This sends one saved prompt through two different usable connection profiles and compares their replies. Unlike prompt tests, it uses tokens. Nothing is added to any chat, and your active connection does not change.',
             }),
             pickers,
             profilePickers,
             status,
             output,
         );
+        updateControls();
         return root;
     }
 
@@ -238,9 +296,9 @@ export function createAbTab() {
         render() {
             if (!root) {
                 build();
-                void reload().catch((error) => {
-                    status.textContent = `Saved runs could not be loaded: ${errorMessage(error)}`;
-                });
+                startReload();
+            } else if (!controller) {
+                tokensInput.value = String(getSettings().abMaxTokens);
             }
             if (!runIndex.length) {
                 replace(output, emptyState(
@@ -251,10 +309,16 @@ export function createAbTab() {
             return root;
         },
         refresh() {
-            void reload().catch(() => {});
+            if (root && !controller) {
+                tokensInput.value = String(getSettings().abMaxTokens);
+                startReload();
+            }
         },
         dispose() {
+            reloadEpoch += 1;
+            actionEpoch += 1;
             controller?.abort();
+            controller = null;
             root?.remove();
             root = null;
         },

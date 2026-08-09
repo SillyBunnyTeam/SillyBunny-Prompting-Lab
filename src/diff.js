@@ -76,12 +76,15 @@ export function collapseUnchanged(parts, { context = 60 } = {}) {
 
 /** Diffs one section of two runs. */
 export function diffSection(baselineRun, currentRun, sectionId, options = {}) {
-    const before = baselineRun?.capture?.sections?.find(section => section.id === sectionId);
-    const after = currentRun?.capture?.sections?.find(section => section.id === sectionId);
+    const occurrence = options.occurrence ?? 0;
+    const before = baselineRun?.capture?.sections?.filter(section => section.id === sectionId)[occurrence];
+    const after = currentRun?.capture?.sections?.filter(section => section.id === sectionId)[occurrence];
     const volatileSpans = (options.volatileSpans ?? [])
-        .filter(span => !span?.section || span.section === sectionId);
+        .filter(span => (!span?.section || span.section === sectionId)
+            && (span?.occurrence === undefined || span.occurrence === occurrence));
     return {
         id: sectionId,
+        occurrence,
         baselineTokens: Number(before?.tokens ?? 0),
         currentTokens: Number(after?.tokens ?? 0),
         parts: diffText(before?.content ?? '', after?.content ?? '', {

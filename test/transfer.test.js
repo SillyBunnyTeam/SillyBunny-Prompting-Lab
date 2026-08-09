@@ -5,7 +5,7 @@ import { installStubContext, removeStubContext } from './helpers/stub-context.js
 
 installStubContext();
 
-const { EXPORT_FORMAT, EXPORT_VERSION } = await import('../src/constants.js');
+const { EXPORT_FORMAT, EXPORT_VERSION, MAX_EXPORT_WITH_BASELINES_BYTES } = await import('../src/constants.js');
 const { createCase, createDraft, createSuite } = await import('../src/schema.js');
 const { KIND, buildExport, formatSize, parseImport, suggestedFileName } = await import('../src/transfer.js');
 const {
@@ -75,6 +75,23 @@ test('exporting with results keeps the baselines and marks the kind', () => {
     assert.deepEqual(payload.suite.baselines, { [cases[0].id]: 'run-1' });
 });
 
+test('exporting baselines keeps only matching pointers and runs', () => {
+    const { suite, cases } = sampleSuite();
+    const second = createCase({ name: 'Second', pins: { characterAvatar: 'aqua.png' } });
+    cases.push(second);
+    suite.caseIds.push(second.id);
+    suite.baselines = { [cases[0].id]: 'run-1', [second.id]: 'run-2' };
+    const payload = JSON.parse(buildExport(suite, cases, [
+        { v: 1, id: 'run-1', caseId: cases[0].id, status: 'pass' },
+        { v: 1, id: 'run-2', caseId: 'wrong-case', status: 'pass' },
+        { v: 1, id: 'extra', caseId: cases[0].id, status: 'pass' },
+    ]).text);
+
+    assert.deepEqual(payload.suite.baselines, { [cases[0].id]: 'run-1' });
+    assert.deepEqual(payload.baselineRuns.map(run => run.id), ['run-1']);
+    assert.equal(parseImport(JSON.stringify(payload)).baselineRuns.length, 1);
+});
+
 test('an oversized export is refused with advice', () => {
     const { suite } = sampleSuite();
     const huge = Array.from({ length: 400 }, (_, index) => createCase({
@@ -109,25 +126,56 @@ test('an imported suite gets fresh identifiers so nothing is overwritten', () =>
 test('baseline pointers are rewritten to follow the new identifiers', () => {
     const { suite, cases } = sampleSuite();
     suite.baselines = { [cases[0].id]: 'run-1' };
-    const runs = [{ v: 1, id: 'run-1', caseId: cases[0].id, status: 'pass' }];
+    const runs = [{
+        v: 1,
+        id: 'run-1',
+        suiteId: suite.id,
+        suiteRunId: 'old-suite-run',
+        caseId: cases[0].id,
+        status: 'pass',
+    }];
     const imported = parseImport(buildExport(suite, cases, runs).text);
     const newCaseId = imported.cases[0].id;
     const newRunId = imported.baselineRuns[0].id;
     assert.deepEqual(imported.suite.baselines, { [newCaseId]: newRunId });
     assert.equal(imported.baselineRuns[0].caseId, newCaseId);
+    assert.equal(imported.baselineRuns[0].suiteId, imported.suite.id);
+    assert.notEqual(imported.baselineRuns[0].suiteRunId, 'old-suite-run');
 });
 
-test('runs for cases missing from the file are dropped on import', () => {
+test('strict imports reject unreferenced runs added to an export', () => {
     const { suite, cases } = sampleSuite();
     suite.baselines = { [cases[0].id]: 'run-1' };
-    const runs = [
+    const payload = JSON.parse(buildExport(suite, cases, [
         { v: 1, id: 'run-1', caseId: cases[0].id, status: 'pass' },
-        { v: 1, id: 'run-ghost', caseId: 'case-not-in-this-file', status: 'pass' },
-    ];
-    const payload = JSON.parse(buildExport(suite, cases, runs).text);
-    const imported = parseImport(JSON.stringify(payload));
-    assert.equal(imported.baselineRuns.length, 1, 'the orphan run must not be stored under a foreign case id');
-    assert.equal(imported.baselineRuns[0].caseId, imported.cases[0].id);
+    ]).text);
+    payload.baselineRuns.push({
+        v: 1,
+        id: 'run-ghost',
+        caseId: 'case-not-in-this-file',
+        status: 'pass',
+    });
+    assert.throws(() => parseImport(JSON.stringify(payload)), /Every baseline run.*referenced|does not belong/);
+});
+
+test('runs from one imported suite run keep a fresh shared group identifier', () => {
+    const { suite, cases } = sampleSuite();
+    const second = createCase({ name: 'Second', pins: { characterAvatar: 'aqua.png' } });
+    cases.push(second);
+    suite.caseIds.push(second.id);
+    suite.baselines = { [cases[0].id]: 'run-1', [second.id]: 'run-2' };
+    const runs = cases.map((testCase, index) => ({
+        v: 1,
+        id: `run-${index + 1}`,
+        suiteId: suite.id,
+        suiteRunId: 'shared-old-id',
+        caseId: testCase.id,
+        status: 'pass',
+    }));
+    const imported = parseImport(buildExport(suite, cases, runs).text);
+    assert.ok(imported.baselineRuns.every(run => run.suiteId === imported.suite.id));
+    assert.equal(new Set(imported.baselineRuns.map(run => run.suiteRunId)).size, 1);
+    assert.notEqual(imported.baselineRuns[0].suiteRunId, 'shared-old-id');
 });
 
 test('importing the same file twice produces two separate suites', () => {
@@ -153,14 +201,81 @@ test('a file from a newer version is refused rather than half understood', () =>
     );
 });
 
+test('imports require a supported kind and their required arrays', () => {
+    const { suite, cases } = sampleSuite();
+    const payload = JSON.parse(buildExport(suite, cases).text);
+    delete payload.kind;
+    assert.throws(() => parseImport(JSON.stringify(payload)), /supported Prompting Lab export kind/);
+
+    payload.kind = KIND.SUITE;
+    delete payload.cases;
+    assert.throws(() => parseImport(JSON.stringify(payload)), /missing its test case list/);
+
+    payload.cases = cases;
+    payload.presets = {};
+    assert.throws(() => parseImport(JSON.stringify(payload)), /damaged preset draft list/);
+});
+
+test('import size is bounded by UTF-8 bytes before JSON parsing', () => {
+    const oversized = 'é'.repeat(Math.floor(MAX_EXPORT_WITH_BASELINES_BYTES / 2) + 1);
+    assert.throws(() => parseImport(oversized), /larger than the .* import limit/);
+});
+
 test('unknown fields in an imported case are dropped', () => {
     const { suite, cases } = sampleSuite();
     const payload = JSON.parse(buildExport(suite, cases).text);
     payload.cases[0].somethingUnexpected = 'ignore me';
-    payload.cases[0].assertions.push({ type: 'from-the-future' });
     const imported = parseImport(JSON.stringify(payload));
     assert.equal(imported.cases[0].somethingUnexpected, undefined);
     assert.equal(imported.cases[0].assertions.length, 1);
+});
+
+test('invalid assertions are rejected instead of normalized to defaults', () => {
+    const { suite, cases } = sampleSuite();
+    const payload = JSON.parse(buildExport(suite, cases).text);
+    payload.cases[0].assertions = [{
+        type: 'content-match',
+        scope: 'final',
+        mode: 'not-a-mode',
+        value: 'text',
+        negate: false,
+    }];
+    assert.throws(() => parseImport(JSON.stringify(payload)), /invalid assertion/);
+});
+
+test('duplicate, null, and orphan test cases are rejected', () => {
+    const { suite, cases } = sampleSuite();
+    const duplicate = JSON.parse(buildExport(suite, cases).text);
+    duplicate.cases.push({ ...duplicate.cases[0] });
+    assert.throws(() => parseImport(JSON.stringify(duplicate)), /two test cases/);
+
+    const missing = JSON.parse(buildExport(suite, cases).text);
+    missing.cases = [null];
+    assert.throws(() => parseImport(JSON.stringify(missing)), /test case 1.*missing or damaged/);
+
+    const orphan = JSON.parse(buildExport(suite, cases).text);
+    orphan.cases.push({ ...orphan.cases[0], id: 'orphan-case' });
+    assert.throws(() => parseImport(JSON.stringify(orphan)), /Every test case.*belong/);
+});
+
+test('duplicate and null baseline runs are rejected', () => {
+    const { suite, cases } = sampleSuite();
+    suite.baselines = { [cases[0].id]: 'run-1' };
+    const runs = [{ v: 1, id: 'run-1', caseId: cases[0].id, status: 'pass' }];
+    const duplicate = JSON.parse(buildExport(suite, cases, runs).text);
+    duplicate.baselineRuns.push({ ...duplicate.baselineRuns[0] });
+    assert.throws(() => parseImport(JSON.stringify(duplicate)), /two baseline runs/);
+
+    const missing = JSON.parse(buildExport(suite, cases, runs).text);
+    missing.baselineRuns = [null];
+    assert.throws(() => parseImport(JSON.stringify(missing)), /baseline run 1.*missing or damaged/);
+});
+
+test('invalid preset drafts are rejected', () => {
+    const { suite, cases } = sampleSuite();
+    const payload = JSON.parse(buildExport(suite, cases).text);
+    payload.presets = [{ v: 1, id: 'bad-draft', apiId: 'unknown', name: 'Bad', payload: {} }];
+    assert.throws(() => parseImport(JSON.stringify(payload)), /Preset draft.*invalid/);
 });
 
 test('imports reject oversized regex assertions before storing them', () => {
@@ -171,7 +286,7 @@ test('imports reject oversized regex assertions before storing them', () => {
         mode: 'regex',
         value: 'a'.repeat(513),
     }];
-    assert.throws(() => parseImport(JSON.stringify(payload)), /longer than the 512-character limit/);
+    assert.throws(() => parseImport(JSON.stringify(payload)), /search pattern is too long.*512/);
 });
 
 /* ------------------------------------------------- embedding into a card */
@@ -193,21 +308,109 @@ test('the privacy notice says what travels with the card', () => {
     assert.match(PRIVACY_NOTICE, /never included/);
 });
 
-test('cases can be written into and read back out of a card', async () => {
+test('cases use the checked merge endpoint and update local data after success', async () => {
+    const raw = { name: 'Aqua', data: { extensions: { existing: true } } };
     const context = {
-        characters: [{ avatar: 'aqua.png', name: 'Aqua', data: { extensions: {} } }],
-        writeExtensionField: async (index, key, value) => {
-            context.characters[index].data.extensions[key] = value;
-        },
+        characterId: 0,
+        characters: [{
+            avatar: 'aqua.png',
+            name: 'Aqua',
+            data: { extensions: {} },
+            json_data: JSON.stringify(raw),
+        }],
     };
-    await writeEmbeddedCases(context, 'aqua.png', [createCase({ name: 'Embedded' })]);
+    const previousFetch = globalThis.fetch;
+    const previousDocument = globalThis.document;
+    const hidden = { value: 'old' };
+    let request = null;
+    globalThis.document = {
+        querySelector: selector => selector === '#character_json_data' ? hidden : null,
+    };
+    globalThis.fetch = async (url, options) => {
+        request = { url, options };
+        return new Response('OK', { status: 200 });
+    };
+    let payload;
+    try {
+        payload = await writeEmbeddedCases(context, 'aqua.png', [createCase({ name: 'Embedded' })]);
+    } finally {
+        globalThis.fetch = previousFetch;
+        globalThis.document = previousDocument;
+    }
+    assert.equal(request.url, '/api/characters/merge-attributes');
+    assert.equal(request.options.method, 'POST');
+    assert.deepEqual(JSON.parse(request.options.body), {
+        avatar: 'aqua.png',
+        data: { extensions: { SillyBunnyPromptingLab: payload } },
+    });
     const read = readEmbeddedCases(context, 'aqua.png');
     assert.equal(read.length, 1);
     assert.equal(read[0].name, 'Embedded');
+    const jsonData = JSON.parse(context.characters[0].json_data);
+    assert.equal(jsonData.data.extensions.existing, true);
+    assert.deepEqual(jsonData.data.extensions.SillyBunnyPromptingLab, payload);
+    assert.equal(hidden.value, context.characters[0].json_data);
+});
+
+test('server success preserves malformed raw character JSON', async () => {
+    const malformed = '{not valid json';
+    const context = {
+        characterId: 0,
+        characters: [{ avatar: 'aqua.png', data: { extensions: {} }, json_data: malformed }],
+    };
+    const previousFetch = globalThis.fetch;
+    const previousDocument = globalThis.document;
+    const hidden = { value: malformed };
+    globalThis.document = { querySelector: () => hidden };
+    globalThis.fetch = async () => new Response('OK', { status: 200 });
+    let payload;
+    try {
+        payload = await writeEmbeddedCases(context, 'aqua.png', [createCase({ name: 'Embedded' })]);
+    } finally {
+        globalThis.fetch = previousFetch;
+        globalThis.document = previousDocument;
+    }
+    assert.strictEqual(context.characters[0].data.extensions.SillyBunnyPromptingLab, payload);
+    assert.equal(context.characters[0].json_data, malformed);
+    assert.equal(hidden.value, malformed);
+});
+
+test('a failed character merge rejects without changing local card data', async () => {
+    const existing = { v: 1, cases: [{ id: 'existing', name: 'Keep me' }] };
+    const jsonData = JSON.stringify({
+        data: { extensions: { SillyBunnyPromptingLab: existing } },
+    });
+    const context = {
+        characterId: 0,
+        characters: [{
+            avatar: 'aqua.png',
+            data: { extensions: { SillyBunnyPromptingLab: existing } },
+            json_data: jsonData,
+        }],
+    };
+    const before = structuredClone(context.characters[0].data);
+    const previousFetch = globalThis.fetch;
+    const previousDocument = globalThis.document;
+    const hidden = { value: jsonData };
+    globalThis.document = { querySelector: () => hidden };
+    globalThis.fetch = async () => new Response('failed', { status: 500 });
+    try {
+        await assert.rejects(
+            () => writeEmbeddedCases(context, 'aqua.png', [createCase({ name: 'Replacement' })]),
+            /refused the request \(500\)/,
+        );
+    } finally {
+        globalThis.fetch = previousFetch;
+        globalThis.document = previousDocument;
+    }
+    assert.deepEqual(context.characters[0].data, before);
+    assert.strictEqual(context.characters[0].data.extensions.SillyBunnyPromptingLab, existing);
+    assert.equal(context.characters[0].json_data, jsonData);
+    assert.equal(hidden.value, jsonData);
 });
 
 test('writing to a character that is not installed says so', async () => {
-    const context = { characters: [], writeExtensionField: async () => {} };
+    const context = { characters: [] };
     await assert.rejects(
         () => writeEmbeddedCases(context, 'missing.png', []),
         /not installed/,
@@ -222,6 +425,33 @@ test('embedded cases from a newer version are left alone', () => {
         }],
     };
     assert.deepEqual(readEmbeddedCases(context, 'aqua.png'), []);
+});
+
+test('writing refuses to overwrite embedded data from a newer version', async () => {
+    const future = { v: 99, cases: [{ id: 'future' }], unknown: { keep: true } };
+    let requests = 0;
+    const context = {
+        characters: [{
+            avatar: 'aqua.png',
+            data: { extensions: { SillyBunnyPromptingLab: future } },
+        }],
+    };
+    const before = JSON.stringify(future);
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+        requests += 1;
+        return new Response('OK', { status: 200 });
+    };
+    try {
+        await assert.rejects(
+            writeEmbeddedCases(context, 'aqua.png', [createCase({ name: 'Replacement' })]),
+            /newer version.*cannot be changed/,
+        );
+    } finally {
+        globalThis.fetch = previousFetch;
+    }
+    assert.equal(requests, 0);
+    assert.equal(JSON.stringify(context.characters[0].data.extensions.SillyBunnyPromptingLab), before);
 });
 
 test('a card with no tests reads as empty', () => {
@@ -242,13 +472,15 @@ test('embedding keeps a Prompt Tags profile name but not the local id', () => {
     assert.equal(stripped.pins.promptTags.profileId, '');
 });
 
-test('adopting drops oversized regex checks the way file import refuses them', () => {
+test('adopting drops assertions rejected by the schema validator', () => {
     const adopted = adoptEmbeddedCases([{
         v: 2,
         id: 'embedded-1',
         name: 'From a shared card',
         assertions: [
             { type: 'content-match', mode: 'regex', value: 'a'.repeat(600) },
+            { type: 'content-match', mode: 'regex', value: '[' },
+            { type: 'token-ceiling', scope: 'total', max: 0 },
             { type: 'content-match', mode: 'contains', value: 'safe text' },
         ],
         pins: {},

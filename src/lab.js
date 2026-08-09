@@ -1,10 +1,12 @@
 import { evaluateAssertions } from './assertions.js';
 import { analyzeCache } from './cache-analyzer.js';
 import { compareRuns, findVolatileSpans } from './compare.js';
-import { CAVEAT, STATUS } from './constants.js';
+import { CAVEAT, DEFAULT_SETTINGS, STATUS } from './constants.js';
 import { ctxOf, getContext, listInstalledPresets, stringHash } from './host.js';
 import { collectIntegrations } from './integrations/index.js';
 import { listPromptTagsProfiles } from './integrations/prompttags.js';
+import { hasCanonicalCapture } from './message-content.js';
+import { registerActiveTask } from './operations.js';
 import { PRESET_API_IDS } from './presets.js';
 import { runSuite as runnerRunSuite, preflight, summarize } from './runner.js';
 import { createRun, resolveStatus } from './schema.js';
@@ -54,7 +56,7 @@ function makeAnalyzer({ baselines, normalize, cachingAtDepth, host }) {
             run.caveats.push(CAVEAT.NO_SQUASH_LIVE);
         }
 
-        run.assertionResults = evaluateAssertions(testCase?.assertions, run);
+        run.assertionResults = await evaluateAssertions(testCase?.assertions, run);
 
         const baseline = baselines?.get(testCase?.id) ?? null;
         if (baseline) {
@@ -66,6 +68,9 @@ function makeAnalyzer({ baselines, normalize, cachingAtDepth, host }) {
                 removedSections: comparison.removedSections,
                 tokenDeltas: comparison.tokenDeltas,
                 totalDelta: comparison.totalDelta,
+                sectionOrderChanged: comparison.sectionOrderChanged,
+                outboundChanged: comparison.outboundChanged,
+                identical: comparison.identical,
                 summary: comparison.summary,
             };
             run.status = resolveStatus({
@@ -87,13 +92,27 @@ function makeAnalyzer({ baselines, normalize, cachingAtDepth, host }) {
 /** Loads the baseline run for each case in a suite. */
 async function loadBaselines(suite) {
     const baselines = new Map();
+    const caseIds = new Set(suite?.caseIds ?? []);
     for (const [caseId, runId] of Object.entries(suite?.baselines ?? {})) {
         const run = await storage.getRun(runId);
-        if (run) {
+        if (caseIds.has(caseId) && isUsableBaseline(run, caseId)) {
             baselines.set(caseId, run);
         }
     }
     return baselines;
+}
+
+function isUsableBaseline(run, caseId, { promotion = false } = {}) {
+    if (!run
+        || run.caseId !== caseId
+        || !hasCanonicalCapture(run)
+        || run.status === STATUS.ERROR
+        || run.status === STATUS.SKIPPED) {
+        return false;
+    }
+    return promotion
+        ? run.status === STATUS.PASS || run.status === STATUS.CHANGED
+        : true;
 }
 
 export async function getSuiteCases(suite) {
@@ -126,7 +145,7 @@ export async function preflightSuite(suite, {
  * Runs a suite end to end and stores the results.
  * @returns {Promise<object>} the runner result, with runs already saved.
  */
-export async function runSuite(suite, {
+async function runSuiteTracked(suite, {
     signal = null,
     onProgress = null,
     onStateChange = null,
@@ -135,6 +154,9 @@ export async function runSuite(suite, {
     blocked = [],
 } = {}) {
     const settings = getSettings();
+    const runRetention = Number.isInteger(settings.runRetention)
+        ? Math.max(1, Math.min(200, settings.runRetention))
+        : DEFAULT_SETTINGS.runRetention;
     const toRun = cases ?? await getSuiteCases(suite);
     const baselines = await loadBaselines(suite);
 
@@ -153,11 +175,6 @@ export async function runSuite(suite, {
             return;
         }
         await storage.saveRun(run);
-        await storage.pruneRuns(
-            run.caseId,
-            settings.runRetention,
-            [...pinnedRuns],
-        );
     };
 
     const result = await runnerRunSuite(toRun, {
@@ -176,7 +193,7 @@ export async function runSuite(suite, {
         persistRun: persist,
     });
 
-    for (const item of blocked ?? []) {
+    for (const item of result.aborted ? [] : (blocked ?? [])) {
         const blockedRun = createRun({
             suiteRunId: result.suiteRunId,
             suiteId: suite?.id ?? '',
@@ -191,7 +208,32 @@ export async function runSuite(suite, {
     }
     result.summary = summarize(result.runs);
 
+    // Keep this whole batch available to the setup comparison that requested
+    // it. A later batch can prune these normally.
+    if (!result.aborted) {
+        const caseIds = new Set(result.runs.map(run => run?.caseId).filter(Boolean));
+        for (const caseId of caseIds) {
+            const currentBatch = result.runs
+                .filter(run => run?.caseId === caseId && run.status !== STATUS.SKIPPED)
+                .map(run => run.id);
+            await storage.pruneRuns(
+                caseId,
+                Math.max(0, runRetention - currentBatch.length),
+                [...pinnedRuns, ...currentBatch],
+            );
+        }
+    }
+
     return result;
+}
+
+export async function runSuite(suite, options = {}) {
+    const task = registerActiveTask('suite orchestration', { signal: options.signal });
+    try {
+        return await runSuiteTracked(suite, { ...options, signal: task.signal });
+    } finally {
+        task.release();
+    }
 }
 
 /* ---------------------------------------------------- setup comparison */
@@ -232,11 +274,11 @@ export function caseWithSetup(testCase, setup = {}) {
  */
 export function summarizeSetups(runs = []) {
     const usable = (runs ?? []).filter(Boolean);
-    const base = usable.find(run => run?.capture?.sections?.length) ?? null;
+    const base = usable.find(run => isUsableBaseline(run, run?.caseId)) ?? null;
     const baseTokens = Number(base?.capture?.tokenTable?.total ?? 0);
     return usable.map((run) => {
         const results = run.assertionResults ?? [];
-        const built = Boolean(run.capture?.sections?.length);
+        const built = hasCanonicalCapture(run);
         const tokens = Number(run.capture?.tokenTable?.total ?? 0);
         return {
             runId: run.id,
@@ -266,29 +308,55 @@ export async function runSetups(suite, testCase, setups, options = {}) {
 
 /** Marks a run as the baseline for its case. */
 export async function promoteBaseline(suite, caseId, runId) {
-    const next = {
-        ...suite,
-        baselines: { ...suite.baselines, [caseId]: runId },
-        updatedAt: new Date().toISOString(),
-    };
-    return storage.saveSuite(next);
+    const run = await storage.getRun(runId);
+    if (!isUsableBaseline(run, caseId, { promotion: true })) {
+        throw new Error('That run cannot be used as a baseline because it is missing, unchecked, belongs to another test case, or has no usable final prompt.');
+    }
+    return storage.updateSuite(suite?.id, (current) => {
+        if (!(current.caseIds ?? []).includes(caseId)) {
+            throw new Error('That test case no longer belongs to this suite.');
+        }
+        return {
+            ...current,
+            baselines: { ...current.baselines, [caseId]: runId },
+            updatedAt: new Date().toISOString(),
+        };
+    });
 }
 
 /** Marks every passing run from a suite run as the baseline for its case. */
 export async function promoteAllPassing(suite, runs) {
-    const baselines = { ...suite.baselines };
+    const promotions = new Map();
     for (const run of runs) {
-        if (run?.status === STATUS.PASS || run?.status === STATUS.CHANGED) {
-            baselines[run.caseId] = run.id;
+        if (run?.status !== STATUS.PASS && run?.status !== STATUS.CHANGED) {
+            continue;
+        }
+        const stored = await storage.getRun(run.id);
+        if (isUsableBaseline(stored, run.caseId, { promotion: true })) {
+            promotions.set(run.caseId, stored.id);
         }
     }
-    return storage.saveSuite({ ...suite, baselines, updatedAt: new Date().toISOString() });
+    return storage.updateSuite(suite?.id, (current) => {
+        const baselines = { ...current.baselines };
+        const caseIds = new Set(current.caseIds ?? []);
+        for (const [caseId, runId] of promotions) {
+            if (caseIds.has(caseId)) {
+                baselines[caseId] = runId;
+            }
+        }
+        return { ...current, baselines, updatedAt: new Date().toISOString() };
+    });
 }
 
 export async function clearBaseline(suite, caseId) {
-    const baselines = { ...suite.baselines };
-    delete baselines[caseId];
-    return storage.saveSuite({ ...suite, baselines, updatedAt: new Date().toISOString() });
+    return storage.updateSuite(suite?.id, (current) => {
+        if (!(current.caseIds ?? []).includes(caseId)) {
+            return current;
+        }
+        const baselines = { ...current.baselines };
+        delete baselines[caseId];
+        return { ...current, baselines, updatedAt: new Date().toISOString() };
+    });
 }
 
 /** Everything the case editor needs to offer real choices. */

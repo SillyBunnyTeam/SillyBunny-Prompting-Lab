@@ -32,7 +32,7 @@
     <script type="module">
         import { deactivate, init } from '/index.js';
         import { __setHostForTests } from '/src/host.js';
-        import { __setStoreForTests, createMemoryStore, saveCase, saveRun, saveSuite } from '/src/storage.js';
+        import { __setStoreForTests, createMemoryStore, saveCase, saveDraft, saveRun, saveSuite } from '/src/storage.js';
         import { mountRuntimeUi } from '/src/ui/runtime.js';
 
         const shellPanel = document.getElementById('fixture-extension-shell');
@@ -89,6 +89,10 @@
             },
             makeLast(type, handler) {
                 this.on(type, handler);
+            },
+            makeFirst(type, handler) {
+                const handlers = listeners.get(type) ?? new Set();
+                listeners.set(type, new Set([handler, ...handlers]));
             },
             removeListener(type, handler) {
                 listeners.get(type)?.delete(handler);
@@ -163,6 +167,8 @@
             // A 1x1 transparent PNG, so the picker's images resolve without the
             // fixture server having to serve character thumbnails.
             getThumbnailUrl: (type, file) => `data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==#${type}/${file}`,
+            deactivateSendButtons: () => {},
+            activateSendButtons: () => {},
             saveSettingsDebounced: () => {},
             getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
             getPresetManager: (apiId = 'openai') => {
@@ -218,6 +224,59 @@
         // mountRuntimeUi returns the already-mounted controller, so the test can
         // drive the same availability path the extension uses after loadHost().
         globalThis.fixtureSetAvailability = value => mountRuntimeUi().setAvailability(value);
+        globalThis.fixtureSeedSuite = (id, name) => saveSuite({ id, name, caseIds: [], baselines: {} });
+        globalThis.fixtureSeedLegacyPins = async () => {
+            const testCase = await saveCase({
+                id: 'fixture-legacy-case',
+                name: 'Legacy pins',
+                pins: {
+                    characterAvatar: 'tester.png',
+                    personaKey: 'missing-persona.png',
+                    connectionProfileId: 'missing-profile',
+                    presets: [{ apiId: 'legacy-api', name: 'Missing preset' }],
+                },
+            });
+            await saveSuite({
+                id: 'fixture-legacy-suite',
+                name: 'Legacy suite',
+                caseIds: [testCase.id],
+            });
+        };
+        globalThis.fixtureSeedReservedPrompt = () => saveDraft({
+            id: 'fixture-reserved-draft',
+            name: 'Reserved draft',
+            apiId: 'openai',
+            payload: {
+                prompts: [{
+                    identifier: 'system',
+                    name: 'Built-in system prompt',
+                    role: 'system',
+                    content: 'Owned by SillyBunny.',
+                    system_prompt: true,
+                }],
+                prompt_order: [{
+                    character_id: 100001,
+                    order: [{ identifier: 'system', enabled: true }],
+                }],
+            },
+        });
+        globalThis.fixtureSeedMultiCharacterSuite = async () => {
+            const first = await saveCase({
+                id: 'fixture-card-a',
+                name: 'Tester card case',
+                pins: { characterAvatar: 'tester.png' },
+            });
+            const second = await saveCase({
+                id: 'fixture-card-b',
+                name: 'Seraphina card case',
+                pins: { characterAvatar: 'seraphina.png' },
+            });
+            await saveSuite({
+                id: 'fixture-card-suite',
+                name: 'Two character cards',
+                caseIds: [first.id, second.id],
+            });
+        };
         globalThis.fixtureSeedUnchecked = async () => {
             const testCase = await saveCase({
                 id: 'fixture-unchecked-case',
@@ -235,7 +294,7 @@
                 suiteId: 'fixture-unchecked-suite',
                 caseId: testCase.id,
                 caseName: testCase.name,
-                status: 'pass',
+                status: 'unchecked',
                 assertionResults: [{
                     index: 0,
                     type: 'wi-activated',

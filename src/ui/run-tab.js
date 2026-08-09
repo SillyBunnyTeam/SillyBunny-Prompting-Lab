@@ -5,6 +5,7 @@ import * as lab from '../lab.js';
 import { willCreateChatFile } from '../apply-state.js';
 import { avatarThumbnail } from './character-picker.js';
 import { dismissWarning, isWarningDismissed } from '../settings.js';
+import { registerActiveTask } from '../operations.js';
 import * as storage from '../storage.js';
 
 const CHAT_FILE_WARNING = 'chat-file-creation';
@@ -70,6 +71,8 @@ export function createRunTab({ onRunFinished = null } = {}) {
     let controller = null;
     let lastResult = null;
     let running = false;
+    let refreshEpoch = 0;
+    let preflightEpoch = 0;
     const chatFileChecks = new Map();
 
     function cachedChatFileCheck(context, avatar) {
@@ -79,33 +82,36 @@ export function createRunTab({ onRunFinished = null } = {}) {
         return chatFileChecks.get(avatar);
     }
 
-    async function refreshSuites() {
-        suites = await storage.listSuites();
-        if (!suiteSelect) {
+    async function refreshSuites({ preferredSuiteId = '', keepResult = false } = {}) {
+        const epoch = ++refreshEpoch;
+        const suiteId = preferredSuiteId || activeSuite?.id || suiteSelect?.value;
+        const retainedResult = keepResult ? lastResult : null;
+        const nextSuites = await storage.listSuites();
+        if (epoch !== refreshEpoch || !suiteSelect || !root) {
             return;
         }
-        const previous = activeSuite?.id ?? suiteSelect.value;
-        replace(suiteSelect, ...suites.map(suite => element('option', {
+        const nextSuite = nextSuites.find(suite => suite.id === suiteId) ?? nextSuites[0] ?? null;
+        const storedResult = nextSuite?.id === suiteId && retainedResult
+            ? retainedResult
+            : (nextSuite ? await loadStoredResult(nextSuite) : null);
+        if (epoch !== refreshEpoch || !root) {
+            return;
+        }
+        suites = nextSuites;
+        activeSuite = nextSuite;
+        lastResult = storedResult;
+        replace(suiteSelect, ...nextSuites.map(suite => element('option', {
             text: `${suite.name} (${suite.caseIds.length})`,
             attributes: { value: suite.id },
         })));
-        if (suites.length) {
-            suiteSelect.value = suites.some(suite => suite.id === previous) ? previous : suites[0].id;
-            activeSuite = suites.find(suite => suite.id === suiteSelect.value) ?? null;
-        } else {
-            activeSuite = null;
+        if (nextSuite) {
+            suiteSelect.value = nextSuite.id;
         }
-        if (!activeSuite) {
-            lastResult = null;
-        } else if (!lastResult) {
-            const storedResult = await loadStoredResult(activeSuite);
-            if (storedResult) {
-                lastResult = storedResult;
-                renderResults(storedResult);
-            }
+        if (storedResult) {
+            renderResults(storedResult);
         }
         if (!lastResult && !running) {
-            replace(resultsHost, suites.length ? null : emptyState(
+            replace(resultsHost, nextSuites.length ? null : emptyState(
                 'No test suites yet.',
                 'Create a suite and add a test case on the Tests tab, then come back here.',
             ));
@@ -128,6 +134,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
         const summary = {
             [STATUS.PASS]: 0,
             [STATUS.CHANGED]: 0,
+            [STATUS.UNCHECKED]: 0,
             [STATUS.FAIL]: 0,
             [STATUS.ERROR]: 0,
             [STATUS.SKIPPED]: 0,
@@ -197,12 +204,12 @@ export function createRunTab({ onRunFinished = null } = {}) {
      * the suite, what it pins, how many checks it carries, and whether it has
      * a baseline to be compared against.
      */
-    function renderQueue(report) {
+    function renderQueue(report, suite) {
         if (!queueHost) {
             return;
         }
         replace(queueHost);
-        if (!activeSuite || running || lastResult || !report?.cases?.length) {
+        if (!suite || running || lastResult || !report?.cases?.length) {
             return;
         }
         const blockedById = new Map((report.blocked ?? []).map(entry => [entry.caseId, entry.reason]));
@@ -244,7 +251,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
                 element('td', { text: testCase.name || 'Untitled test case' }),
                 characterCell,
                 element('td', { className: 'sbpl-number', text: String(testCase.assertions?.length ?? 0) }),
-                element('td', { text: activeSuite.baselines?.[testCase.id] ? 'Set' : 'None yet' }),
+                element('td', { text: suite.baselines?.[testCase.id] ? 'Set' : 'None yet' }),
                 element('td', { text: blockedReason ?? 'Ready' }),
             );
             body.append(row);
@@ -258,19 +265,27 @@ export function createRunTab({ onRunFinished = null } = {}) {
         if (!warningsHost) {
             return;
         }
+        const epoch = ++preflightEpoch;
+        const suite = activeSuite ? structuredClone(activeSuite) : null;
         replace(warningsHost);
         replace(queueHost);
-        if (!activeSuite) {
+        if (!suite) {
             return;
         }
         let report;
         try {
-            report = await lab.preflightSuite(activeSuite, { chatFileChecker: cachedChatFileCheck });
+            report = await lab.preflightSuite(suite, { chatFileChecker: cachedChatFileCheck });
         } catch (error) {
+            if (epoch !== preflightEpoch || activeSuite?.id !== suite.id || !root) {
+                return;
+            }
             warningsHost.append(warning(`This suite could not be checked: ${errorMessage(error)}`));
             return;
         }
-        renderQueue(report);
+        if (epoch !== preflightEpoch || activeSuite?.id !== suite.id || !root) {
+            return;
+        }
+        renderQueue(report, suite);
 
         for (const blocked of report.blocked) {
             warningsHost.append(warning(`One test case cannot run: ${blocked.reason}`));
@@ -280,8 +295,13 @@ export function createRunTab({ onRunFinished = null } = {}) {
                 `${report.charactersWithoutChats.length === 1 ? 'One character has' : `${report.charactersWithoutChats.length} characters have`} no chat yet. Running these tests will open them, which creates a chat for each.`,
             );
             note.append(button('Do not show this again', async () => {
-                dismissWarning(CHAT_FILE_WARNING);
-                await showPreflight();
+                const task = registerActiveTask('warning dismissal');
+                try {
+                    dismissWarning(CHAT_FILE_WARNING);
+                    await showPreflight();
+                } finally {
+                    task.release();
+                }
             }, { className: 'menu_button sbpl-button sbpl-button-quiet' }));
             warningsHost.append(note);
         }
@@ -328,7 +348,7 @@ export function createRunTab({ onRunFinished = null } = {}) {
 
         const counts = element('p', { className: 'sbpl-summary' });
         const parts = [];
-        for (const status of [STATUS.PASS, STATUS.CHANGED, STATUS.FAIL, STATUS.ERROR, STATUS.SKIPPED]) {
+        for (const status of [STATUS.PASS, STATUS.CHANGED, STATUS.UNCHECKED, STATUS.FAIL, STATUS.ERROR, STATUS.SKIPPED]) {
             if (summary[status]) {
                 parts.push(`${summary[status]} ${STATUS_LABEL[status].toLowerCase()}`);
             }
@@ -385,11 +405,16 @@ export function createRunTab({ onRunFinished = null } = {}) {
     }
 
     async function start(onlyCaseId = '') {
-        if (running || !activeSuite) {
+        if (running || !activeSuite || !root) {
             return;
         }
+        const suite = structuredClone(activeSuite);
+        const caseId = onlyCaseId;
+        const runController = new AbortController();
+        const task = registerActiveTask('run tab launch', { signal: runController.signal });
         running = true;
-        controller = new AbortController();
+        controller = runController;
+        preflightEpoch++;
         lastResult = null;
         updateControls();
         replace(queueHost);
@@ -398,16 +423,29 @@ export function createRunTab({ onRunFinished = null } = {}) {
         progressBar.value = 0;
         statusLine.textContent = 'Getting ready...';
 
-        const host = await loadHost();
         try {
-            const report = await lab.preflightSuite(activeSuite, { chatFileChecker: cachedChatFileCheck });
-            const only = id => !onlyCaseId || id === onlyCaseId;
-            const result = await lab.runSuite(activeSuite, {
-                signal: controller.signal,
+            const host = await loadHost();
+            if (task.signal.aborted || !root) {
+                return;
+            }
+            const report = await lab.preflightSuite(suite, { chatFileChecker: cachedChatFileCheck });
+            if (task.signal.aborted || !root) {
+                return;
+            }
+            if (report.unsavedPresetEdits && report.unsavedPresetEditsCertain) {
+                statusLine.textContent = 'Save or discard your unsaved preset changes before running tests.';
+                return;
+            }
+            const only = id => !caseId || id === caseId;
+            const result = await lab.runSuite(suite, {
+                signal: task.signal,
                 host,
                 cases: report.runnable.filter(testCase => only(testCase.id)),
                 blocked: report.blocked.filter(entry => only(entry.caseId)),
                 onProgress: (event) => {
+                    if (!root) {
+                        return;
+                    }
                     progressBar.max = event.total;
                     if (event.status === 'running') {
                         progressLabel.textContent = `Testing ${event.caseName} (${event.index + 1} of ${event.total})`;
@@ -417,22 +455,38 @@ export function createRunTab({ onRunFinished = null } = {}) {
                     }
                 },
             });
+            if (!root) {
+                return;
+            }
             lastResult = result;
-            statusLine.textContent = result.aborted
-                ? 'Stopped. Your settings have been put back.'
-                : 'Finished. Your settings have been put back.';
+            if (result.restoreProblems?.length) {
+                statusLine.textContent = result.aborted
+                    ? 'Stopped, but some settings could not be put back.'
+                    : 'Finished, but some settings could not be put back.';
+            } else {
+                statusLine.textContent = result.aborted
+                    ? 'Stopped. Your settings have been put back.'
+                    : 'Finished. Your settings have been put back.';
+            }
             renderResults(result);
             onRunFinished?.(result);
         } catch (error) {
-            statusLine.textContent = `The run could not finish: ${errorMessage(error)}`;
+            if (root) {
+                statusLine.textContent = task.signal.aborted
+                    ? 'Stopped.'
+                    : `The run could not finish: ${errorMessage(error)}`;
+            }
         } finally {
-            running = false;
-            controller = null;
-            progressBar.hidden = true;
-            progressLabel.textContent = '';
-            updateControls();
-            chatFileChecks.clear();
-            await refreshSuites();
+            task.release();
+            if (controller === runController) {
+                running = false;
+                controller = null;
+                progressBar.hidden = true;
+                progressLabel.textContent = '';
+                updateControls();
+                chatFileChecks.clear();
+                await refreshSuites({ preferredSuiteId: suite.id, keepResult: true });
+            }
         }
     }
 
@@ -446,11 +500,12 @@ export function createRunTab({ onRunFinished = null } = {}) {
             attributes: { 'aria-label': 'Suite to run' },
         });
         suiteSelect.addEventListener('change', async () => {
-            activeSuite = suites.find(suite => suite.id === suiteSelect.value) ?? null;
+            const suiteId = suiteSelect.value;
+            activeSuite = suites.find(suite => suite.id === suiteId) ?? null;
             lastResult = null;
             replace(resultsHost);
             updateControls();
-            await showPreflight();
+            await refreshSuites({ preferredSuiteId: suiteId });
         });
 
         runButton = button('Run suite', () => { void start(); }, {
@@ -465,9 +520,18 @@ export function createRunTab({ onRunFinished = null } = {}) {
             if (!activeSuite || !lastResult) {
                 return;
             }
-            await lab.promoteAllPassing(activeSuite, lastResult.runs);
-            statusLine.textContent = 'Saved passing runs as baselines. Future runs will be compared against them.';
-            await refreshSuites();
+            const suite = structuredClone(activeSuite);
+            const runs = structuredClone(lastResult.runs);
+            const task = registerActiveTask('baseline promotion');
+            try {
+                await lab.promoteAllPassing(suite, runs);
+                statusLine.textContent = 'Saved passing runs as baselines. Future runs will be compared against them.';
+                await refreshSuites({ preferredSuiteId: suite.id, keepResult: true });
+            } catch (error) {
+                statusLine.textContent = `The baselines could not be saved: ${errorMessage(error)}`;
+            } finally {
+                task.release();
+            }
         }, { className: 'menu_button sbpl-button' });
         baselineButton.hidden = true;
 
@@ -505,25 +569,40 @@ export function createRunTab({ onRunFinished = null } = {}) {
         },
         /** Runs a single test case, so a small change can be checked on its own. */
         runOne(testCase) {
+            if (!root) {
+                return;
+            }
             if (running) {
                 statusLine.textContent = 'A run is already in progress. Stop it or let it finish first.';
                 return;
             }
+            const caseId = testCase?.id ?? '';
+            const currentSuiteId = testCase?.suiteId || activeSuite?.id || '';
             void (async () => {
-                await refreshSuites();
-                const suite = suites.find(item => item.caseIds.includes(testCase.id));
+                await refreshSuites({ preferredSuiteId: currentSuiteId });
+                if (!root) {
+                    return;
+                }
+                const suite = suites.find(item => item.id === currentSuiteId && item.caseIds.includes(caseId))
+                    ?? (activeSuite?.caseIds.includes(caseId) ? activeSuite : null)
+                    ?? suites.find(item => item.caseIds.includes(caseId));
                 if (!suite) {
                     return;
                 }
                 activeSuite = suite;
                 suiteSelect.value = suite.id;
-                await start(testCase.id);
+                await start(caseId);
             })().catch((error) => {
-                statusLine.textContent = `That test case could not be run: ${errorMessage(error)}`;
+                if (root) {
+                    statusLine.textContent = `That test case could not be run: ${errorMessage(error)}`;
+                }
             });
         },
         dispose() {
+            refreshEpoch++;
+            preflightEpoch++;
             controller?.abort();
+            controller = null;
             root?.remove();
             root = null;
         },

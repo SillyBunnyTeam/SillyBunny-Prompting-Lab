@@ -8,6 +8,8 @@ import {
     addPromptModule,
     apiIdsForMode,
     canonicalJson,
+    canEditPrompt,
+    canRemovePrompt,
     describePresetRef,
     fingerprint,
     getPromptOrder,
@@ -106,10 +108,33 @@ test('withPromptOrder adds the global entry when a preset has none', () => {
     ]);
 });
 
-test('markers and built-in prompts are protected from editing', () => {
+test('reserved identity is separate from PromptManager edit and remove rules', () => {
     assert.equal(isReservedPrompt({ marker: true }), true);
     assert.equal(isReservedPrompt({ system_prompt: true }), true);
     assert.equal(isReservedPrompt({ identifier: 'custom' }), false);
+    assert.equal(canEditPrompt({ marker: true }), false);
+    assert.equal(canRemovePrompt({ marker: true }), true);
+    assert.equal(canEditPrompt({ system_prompt: true }), true);
+    assert.equal(canRemovePrompt({ system_prompt: true }), false);
+});
+
+test('markers cannot be edited and system prompts cannot be removed', () => {
+    const payload = ccPreset();
+    payload.prompts.push({ identifier: 'system', name: 'System', content: 'Built in', system_prompt: true });
+    getPromptOrder(payload).push({ identifier: 'system', enabled: true });
+
+    assert.deepEqual(updatePromptModule(payload, 'chatHistory', { content: 'Changed' }), payload);
+    const withoutMarker = removePromptModule(payload, 'chatHistory');
+    assert.equal(withoutMarker.prompts.some(prompt => prompt.identifier === 'chatHistory'), false);
+
+    const updatedSystem = updatePromptModule(payload, 'system', { content: 'Changed' });
+    assert.equal(updatedSystem.prompts.find(prompt => prompt.identifier === 'system').content, 'Changed');
+    assert.deepEqual(removePromptModule(payload, 'system'), payload);
+
+    const disabled = setPromptModuleEnabled(payload, 'chatHistory', false);
+    assert.equal(getPromptOrder(disabled).find(item => item.identifier === 'chatHistory').enabled, false);
+    const moved = movePromptModule(payload, 'chatHistory', -1);
+    assert.notDeepEqual(getPromptOrder(moved), getPromptOrder(payload));
 });
 
 test('validation names the damage instead of failing silently', () => {

@@ -84,6 +84,20 @@ test('runCase records the selected connection profile name', async () => {
     assert.equal(run.environment.profileName, 'Claude');
 });
 
+test('runCase prefers the host model resolver over cached settings metadata', async () => {
+    const context = {
+        ...makeContext(),
+        chatCompletionSettings: { openai_model: 'stale-model' },
+        getChatCompletionModel: () => 'live-model',
+    };
+    const run = await runCase(createCase({ pins: { characterAvatar: 'aqua.png' } }), {
+        context,
+        captureFn: fakeCapture(),
+        applyFn: async () => ({ caveats: [] }),
+    });
+    assert.equal(run.environment.model, 'live-model');
+});
+
 test('runCase captures twice by default so volatile content can be spotted', async () => {
     let captures = 0;
     await runCase(createCase({ pins: { characterAvatar: 'aqua.png' } }), {
@@ -145,6 +159,49 @@ test('caveats from applying and from capturing are merged without duplicates', a
         [...run.caveats].sort(),
         ['no-interceptors', 'prompt-tags-missing', 'tokenizer-fallback'],
     );
+});
+
+test('runCase merges second-capture quality while storing the first prompt', async () => {
+    const first = await fakeCapture({
+        messages: [{ role: 'system', content: 'First.' }],
+        caveats: ['no-interceptors'],
+        metricsComplete: true,
+        capabilities: {
+            syntheticMessagesIsolated: true,
+            macroStateSandboxed: false,
+            localMacroStateRestored: true,
+        },
+    })();
+    const second = await fakeCapture({
+        messages: [{ role: 'system', content: 'Second.' }],
+        caveats: ['macro-rollback-unconfirmed', 'final-metrics-incomplete'],
+        metricsComplete: false,
+        capabilities: {
+            syntheticMessagesIsolated: false,
+            macroStateSandboxed: true,
+            localMacroStateRestored: true,
+        },
+    })();
+    let captures = 0;
+    let analyzedBoth = false;
+    const run = await runCase(createCase({ pins: { characterAvatar: 'aqua.png' } }), {
+        context: makeContext(),
+        captureFn: async () => [first, second][captures++],
+        applyFn: async () => ({ caveats: [] }),
+        analyze: async ({ run: pending, first: analyzedFirst, second: analyzedSecond }) => {
+            analyzedBoth = analyzedFirst === first && analyzedSecond === second;
+            return pending;
+        },
+    });
+
+    assert.deepEqual(run.capture.messages, first.messages);
+    assert.equal(analyzedBoth, true);
+    assert.equal(run.capture.metricsComplete, false);
+    assert.equal(run.capture.capabilities.syntheticMessagesIsolated, false);
+    assert.equal(run.capture.capabilities.macroStateSandboxed, false);
+    assert.equal(run.capture.capabilities.localMacroStateRestored, true);
+    assert.ok(run.caveats.includes('macro-rollback-unconfirmed'));
+    assert.ok(run.caveats.includes('final-metrics-incomplete'));
 });
 
 test('runSuite restores the user configuration after a normal run', async () => {
@@ -224,7 +281,75 @@ test('aborting mid-suite skips the remaining cases and still restores', async ()
     assert.equal(restored, true);
     assert.equal(result.aborted, true);
     assert.equal(result.state, RUNNER_STATE.ABORTED);
-    assert.equal(result.summary.skipped, 2, 'the cases after the abort must be skipped');
+    assert.equal(result.summary.skipped, 3, 'the in-flight capture and remaining cases must be skipped');
+});
+
+test('an aborted in-flight capture is never handed to persistence', async () => {
+    const controller = new AbortController();
+    const saved = [];
+    const result = await runSuite([createCase({ pins: { characterAvatar: 'aqua.png' } })], {
+        context: makeContext(),
+        signal: controller.signal,
+        applyFn: async () => ({ caveats: [] }),
+        captureFn: async () => {
+            controller.abort();
+            return fakeCapture()();
+        },
+        snapshotFn: () => ({}),
+        restoreFn: async () => [],
+        persistRun: async run => saved.push(run.id),
+    });
+    assert.equal(result.runs[0].status, STATUS.SKIPPED);
+    assert.deepEqual(saved, []);
+});
+
+test('runSuite restores the original snapshot before every case', async () => {
+    const context = { ...makeContext(), sampler: 'original' };
+    const seen = [];
+    let applied = 0;
+    let restores = 0;
+    await runSuite([
+        createCase({ name: 'pinned', pins: { characterAvatar: 'aqua.png' } }),
+        createCase({ name: 'unpinned', pins: { characterAvatar: 'aqua.png' } }),
+    ], {
+        context,
+        doubleRun: false,
+        snapshotFn: () => ({ sampler: 'original' }),
+        restoreFn: async (_context, snapshot) => {
+            restores += 1;
+            context.sampler = snapshot.sampler;
+            return [];
+        },
+        applyFn: async () => {
+            if (applied++ === 0) context.sampler = 'pinned';
+            return { caveats: [] };
+        },
+        captureFn: async () => {
+            seen.push(context.sampler);
+            return fakeCapture()();
+        },
+    });
+    assert.deepEqual(seen, ['pinned', 'original']);
+    assert.equal(restores, 3, 'two pre-case restores plus the final restore');
+});
+
+test('runSuite rejects a concurrent host operation immediately', async () => {
+    let releaseCapture;
+    const waiting = new Promise(resolve => { releaseCapture = resolve; });
+    const first = runSuite([createCase({ pins: { characterAvatar: 'aqua.png' } })], {
+        context: makeContext(),
+        doubleRun: false,
+        snapshotFn: () => ({}),
+        restoreFn: async () => [],
+        applyFn: async () => ({ caveats: [] }),
+        captureFn: async () => {
+            await waiting;
+            return fakeCapture()();
+        },
+    });
+    await assert.rejects(() => runSuite([], {}), error => error.code === 'SBPL_BUSY');
+    releaseCapture();
+    await first;
 });
 
 test('progress is reported before and after each case', async () => {
@@ -319,6 +444,73 @@ test('preflight blocks a case whose preset is not installed', async () => {
     assert.match(report.blocked[0].reason, /the chat completion preset "Gone"/i);
 });
 
+test('preflight blocks wrong-mode and mixed preset pins before applying anything', async () => {
+    const context = makeContext();
+    const wrongMode = createCase({
+        name: 'text on chat',
+        pins: { characterAvatar: 'aqua.png', presets: [{ apiId: 'context', name: 'Story' }] },
+    });
+    const mixed = createCase({
+        name: 'mixed',
+        pins: {
+            characterAvatar: 'aqua.png',
+            presets: [
+                { apiId: 'openai', name: 'Chat' },
+                { apiId: 'context', name: 'Story' },
+            ],
+        },
+    });
+
+    const report = await preflight([wrongMode, mixed], { context });
+
+    assert.equal(report.runnable.length, 0);
+    assert.match(report.blocked[0].reason, /Text Completion presets.*Chat Completion/);
+    assert.match(report.blocked[1].reason, /both Chat Completion and Text Completion/);
+});
+
+test('preflight blocks a character switch when the original empty persona cannot be restored', async () => {
+    const context = {
+        ...makeContext(),
+        userAvatar: '',
+        characters: [
+            { avatar: 'aqua.png', name: 'Aqua' },
+            { avatar: 'megumin.png', name: 'Megumin' },
+        ],
+    };
+    const testCase = createCase({ pins: { characterAvatar: 'megumin.png' } });
+
+    const report = await preflight([testCase], { context, chatFileChecker: async () => false });
+
+    assert.equal(report.runnable.length, 0);
+    assert.match(report.blocked[0].reason, /empty persona while switching conversations/);
+});
+
+test('preflight does not trust a selected profile id when its live fields differ', async () => {
+    const connection = { api: 'openai', model: 'manual-model', proxy: 'None' };
+    const context = {
+        ...makeContext(),
+        extensionSettings: {
+            connectionManager: {
+                selectedProfile: 'p1',
+                profiles: [{ id: 'p1', name: 'Current', mode: 'cc', api: 'openai', model: 'profile-model' }],
+            },
+        },
+        SlashCommandParser: {
+            commands: new Proxy({}, {
+                get: (_target, field) => ({ callback: async () => connection[field] ?? '' }),
+            }),
+        },
+    };
+    const testCase = createCase({
+        pins: { characterAvatar: 'aqua.png', connectionProfileId: 'p1' },
+    });
+
+    const report = await preflight([testCase], { context, chatFileChecker: async () => false });
+
+    assert.equal(report.runnable.length, 0);
+    assert.match(report.blocked[0].reason, /cannot be restored exactly from the live host state/);
+});
+
 test('preflight accepts a chat-file checker and calls it once per avatar', async () => {
     const context = makeContext();
     let checks = 0;
@@ -362,6 +554,24 @@ test('preflight reports genuinely unsaved preset edits', async () => {
     assert.equal(report.unsavedPresetEditsCertain, true);
 });
 
+test('preflight checks every preset manager a connection profile can touch', async () => {
+    const context = makeContext();
+    context.extensionSettings.connectionManager = {
+        selectedProfile: 'current',
+        profiles: [{ id: 'current', name: 'Current' }, { id: 'other', name: 'Other' }],
+    };
+    context.getPresetManager = apiId => ({
+        getAllPresets: () => [],
+        _dirty: apiId === 'instruct',
+        _checkDirty() {},
+    });
+    const report = await preflight([createCase({
+        pins: { characterAvatar: 'aqua.png', connectionProfileId: 'other' },
+    })], { context, chatFileChecker: async () => false });
+    assert.equal(report.unsavedPresetEdits, true);
+    assert.equal(report.unsavedPresetEditsCertain, true);
+});
+
 test('preflight does not warn when there is no preset panel to lose edits from', async () => {
     const report = await preflight([], { context: makeContext() });
     assert.equal(report.unsavedPresetEdits, false);
@@ -373,13 +583,15 @@ test('summarize counts every status', () => {
         { status: STATUS.PASS },
         { status: STATUS.FAIL },
         { status: STATUS.CHANGED },
+        { status: STATUS.UNCHECKED },
         { status: STATUS.ERROR },
         { status: STATUS.SKIPPED },
     ]);
-    assert.equal(summary.total, 6);
+    assert.equal(summary.total, 7);
     assert.equal(summary.pass, 2);
     assert.equal(summary.fail, 1);
     assert.equal(summary.changed, 1);
+    assert.equal(summary.unchecked, 1);
     assert.equal(summary.error, 1);
     assert.equal(summary.skipped, 1);
 });

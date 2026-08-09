@@ -1,7 +1,7 @@
 import { sendPrompt } from './ab.js';
 import { applyCase, restoreState, snapshotState } from './apply-state.js';
 import { captureOnce } from './capture.js';
-import { CAVEAT } from './constants.js';
+import { CAVEAT, CAVEAT_TEXT } from './constants.js';
 import { ctxOf, getContext } from './host.js';
 
 /**
@@ -47,10 +47,10 @@ function clampCount(value, max) {
  * carries on by itself; from the second turn onwards the columns are answering
  * their own replies rather than the same input.
  */
-export function sceneTurns({ mode = SCENE_MODE.SCRIPTED, turns = [], exchanges = 2 } = {}) {
+function sceneTurnEntries({ mode = SCENE_MODE.SCRIPTED, turns = [], exchanges = 2 } = {}) {
     const written = (turns ?? [])
-        .map(text => String(text ?? '').trim())
-        .filter(Boolean)
+        .map((text, index) => ({ index: index + 1, text: String(text ?? '') }))
+        .filter(turn => turn.text.trim())
         .slice(0, MAX_TURNS);
     if (mode !== SCENE_MODE.CONTINUE) {
         return written;
@@ -59,7 +59,14 @@ export function sceneTurns({ mode = SCENE_MODE.SCRIPTED, turns = [], exchanges =
         return [];
     }
     const count = clampCount(exchanges, MAX_TURNS);
-    return [written[0], ...Array.from({ length: count - 1 }, () => CONTINUE_NUDGE)];
+    return Array.from({ length: count }, (_, index) => ({
+        index: index + 1,
+        text: index ? CONTINUE_NUDGE : written[0].text,
+    }));
+}
+
+export function sceneTurns(options = {}) {
+    return sceneTurnEntries(options).map(turn => turn.text);
 }
 
 /**
@@ -93,8 +100,9 @@ export function describeDuration(ms) {
     if (seconds < 60) {
         return `${Math.round(seconds)} seconds`;
     }
-    const minutes = Math.floor(seconds / 60);
-    const rest = Math.round(seconds - (minutes * 60));
+    const rounded = Math.round(seconds);
+    const minutes = Math.floor(rounded / 60);
+    const rest = rounded % 60;
     return `${minutes} minute${minutes === 1 ? '' : 's'} ${rest} second${rest === 1 ? '' : 's'}`;
 }
 
@@ -121,23 +129,62 @@ function escapeHtml(value) {
 }
 
 /**
- * Replies often carry markup of their own: a tracker, a styled card, a table.
- * A saved page keeps that markup so it reads the way it was meant to, but it
- * was written by a model, and opening a file must never run someone's script.
+ * Replies often carry markup of their own. A saved page keeps benign text
+ * formatting, but opening a model-written file must never run a script.
  *
- * Scripts, frames and event handlers are taken out here, and the page carries
- * a policy that blocks anything that gets past this, so neither has to be
- * perfect on its own. A reply's own styling is kept, so a card that styles
- * itself may also colour the page around it.
+ * In a browser, a native parser copies only inert formatting elements into a
+ * new tree. Without a DOM, markup is shown as escaped plain text instead.
  */
+const SAFE_REPLY_TAGS = new Set([
+    'b', 'strong', 'i', 'em', 'u', 's', 'del', 'ins', 'small', 'sub', 'sup', 'mark',
+    'code', 'pre', 'kbd', 'samp', 'var', 'blockquote', 'q', 'p', 'br', 'span', 'div',
+    'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'table', 'caption', 'thead', 'tbody', 'tfoot',
+    'tr', 'th', 'td', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr',
+]);
+const DROP_REPLY_CONTENT = new Set([
+    'script', 'style', 'iframe', 'object', 'embed', 'template', 'svg', 'math', 'canvas',
+]);
+
 export function sanitizeReplyHtml(value) {
-    return String(value ?? '')
-        .replace(/<\s*(script|iframe|object|embed|frame|frameset)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
-        .replace(/<\s*(script|iframe|object|embed|frame|frameset|link|meta|base)\b[^>]*\/?>/gi, '')
-        .replace(/\son[a-z]+\s*=\s*"[^"]*"/gi, '')
-        .replace(/\son[a-z]+\s*=\s*'[^']*'/gi, '')
-        .replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, '')
-        .replace(/javascript:/gi, 'blocked:');
+    const source = String(value ?? '');
+    if (typeof globalThis.DOMParser !== 'function'
+        || typeof globalThis.document?.createElement !== 'function') {
+        return escapeHtml(source);
+    }
+    try {
+        const parsed = new globalThis.DOMParser().parseFromString(source, 'text/html');
+        const output = globalThis.document.createElement('div');
+        const copy = (node, parent) => {
+            if (node.nodeType === 3) {
+                parent.append(globalThis.document.createTextNode(node.nodeValue ?? ''));
+                return;
+            }
+            if (node.nodeType !== 1) {
+                return;
+            }
+            const tag = node.tagName.toLowerCase();
+            if (DROP_REPLY_CONTENT.has(tag)) {
+                return;
+            }
+            if (!SAFE_REPLY_TAGS.has(tag)) {
+                for (const child of node.childNodes) {
+                    copy(child, parent);
+                }
+                return;
+            }
+            const clean = globalThis.document.createElement(tag);
+            for (const child of node.childNodes) {
+                copy(child, clean);
+            }
+            parent.append(clean);
+        };
+        for (const child of parsed.body.childNodes) {
+            copy(child, output);
+        }
+        return output.innerHTML;
+    } catch {
+        return escapeHtml(source);
+    }
 }
 
 /** Elements whose text is not prose, and whose lines must be left alone. */
@@ -185,17 +232,48 @@ const SCENE_PAGE_STYLE = `
     /* What was typed is plain text, so its own line breaks have to survive. */
     .said { margin: 0 0 0.5rem; padding-left: 0.6rem; border-left: 2px solid rgba(128, 128, 128, 0.5); font-style: italic; opacity: 0.85; white-space: pre-wrap; }
     .reply { overflow-wrap: break-word; }
-    .reply img, .reply table { max-width: 100%; }
+    .reply table { max-width: 100%; }
     .opening { margin: 0 0 1.5rem; padding: 0 0 0 0.8rem; border-left: 3px solid rgba(128, 128, 128, 0.5); }
     .failed { color: #c0392b; }
 `;
+
+function sceneCompletion(result) {
+    const columns = result?.columns ?? [];
+    const counted = columns.reduce(
+        (total, column) => total + (column.turns ?? []).filter(turn => !turn.waiting).length,
+        0,
+    );
+    const completed = result?.completedRequests === undefined
+        ? counted
+        : Math.max(0, Math.floor(Number(result.completedRequests) || 0));
+    const expected = result?.expectedRequests === undefined
+        ? (Array.isArray(result?.script) ? result.script.length * columns.length : completed)
+        : Math.max(0, Math.floor(Number(result.expectedRequests) || 0));
+    const aborted = Boolean(result?.aborted);
+    const incomplete = aborted || Boolean(result?.incomplete) || completed < expected;
+    return {
+        completed,
+        expected,
+        status: aborted ? 'Aborted (incomplete)' : (incomplete ? 'Incomplete' : 'Complete'),
+    };
+}
+
+function sceneCaveats(result) {
+    return [...new Set([
+        ...(result?.caveats ?? []),
+        ...(result?.columns ?? []).flatMap(column => column.caveats ?? []),
+    ].filter(Boolean))].map(code => CAVEAT_TEXT[code] ?? String(code));
+}
 
 /**
  * A standalone page: every column side by side, each reply rendered as the
  * model wrote it. No file it does not carry itself, and nothing it may fetch.
  */
 function sceneHtmlPage(result, { characterName, connectionName, modelName, savedAt }) {
+    const completion = sceneCompletion(result);
     const facts = [
+        `Status: ${completion.status}`,
+        `Requests: ${completion.completed} of ${completion.expected} completed`,
         characterName ? `Character: ${characterName}` : '',
         connectionName ? `Connection: ${connectionName}` : '',
         modelName ? `Model: ${modelName}` : '',
@@ -205,6 +283,11 @@ function sceneHtmlPage(result, { characterName, connectionName, modelName, saved
     const opening = result?.opening
         ? `<section class="opening"><p class="meta">The scene opened with</p>`
             + `<div class="reply">${breakReplyLines(sanitizeReplyHtml(result.opening))}</div></section>`
+        : '';
+    const caveats = sceneCaveats(result);
+    const caveatBlock = caveats.length
+        ? `<section class="note"><strong>What these replies cannot show</strong><ul>${caveats
+            .map(caveat => `<li>${escapeHtml(caveat)}</li>`).join('')}</ul></section>`
         : '';
 
     const columns = (result?.columns ?? []).map((column) => {
@@ -216,9 +299,12 @@ function sceneHtmlPage(result, { characterName, connectionName, modelName, saved
             const timing = `${describeDuration(turn.durationMs)} · prompt ${Number(turn.promptTokens ?? 0).toLocaleString()} tokens`;
             parts.push(`<p class="meta">Turn ${escapeHtml(turn.index)} · ${escapeHtml(timing)}</p>`);
             parts.push(`<p class="said">${escapeHtml(turn.userText)}</p>`);
-            parts.push(turn.error
-                ? `<p class="failed">${escapeHtml(turn.error)}</p>`
-                : `<div class="reply">${breakReplyLines(sanitizeReplyHtml(turn.text))}</div>`);
+            if (String(turn.text ?? '').trim()) {
+                parts.push(`<div class="reply">${breakReplyLines(sanitizeReplyHtml(turn.text))}</div>`);
+            }
+            if (turn.error) {
+                parts.push(`<p class="failed">${escapeHtml(turn.error)}</p>`);
+            }
         }
         return `<section class="column">\n${parts.join('\n')}\n</section>`;
     }).join('\n');
@@ -227,15 +313,16 @@ function sceneHtmlPage(result, { characterName, connectionName, modelName, saved
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'">
 <title>Scene comparison${characterName ? ` — ${escapeHtml(characterName)}` : ''}</title>
 <style>${SCENE_PAGE_STYLE}</style>
 </head>
 <body>
 <h1>Scene comparison</h1>
 ${facts ? `<p class="facts">${escapeHtml(facts)}</p>` : ''}
-<p class="note">Replies are shown as the model wrote them, markup and all. Scripts and anything this
-page would have to fetch are blocked, so a reply cannot do anything when this file is opened.</p>
+<p class="note">Replies keep safe text formatting. Scripts, forms, links, styles, and anything this
+page would have to fetch are removed, so a reply cannot do anything when this file is opened.</p>
+${caveatBlock}
 ${opening}
 <div class="columns">
 ${columns}
@@ -261,6 +348,8 @@ export function formatScene(result, {
         return sceneHtmlPage(result, { characterName, connectionName, modelName, savedAt });
     }
     const markdown = format !== 'txt';
+    const completion = sceneCompletion(result);
+    const caveats = sceneCaveats(result);
     const lines = [];
     const heading = (level, text) => lines.push(markdown ? `${'#'.repeat(level)} ${text}` : text.toUpperCase());
     const rule = () => lines.push(markdown ? '' : '-'.repeat(60));
@@ -268,6 +357,8 @@ export function formatScene(result, {
     heading(1, 'Scene comparison');
     lines.push('');
     for (const [label, value] of [
+        ['Status', completion.status],
+        ['Requests', `${completion.completed} of ${completion.expected} completed`],
         ['Character', characterName],
         ['Connection', connectionName],
         // The connection says where the replies came from; the model says who
@@ -280,6 +371,15 @@ export function formatScene(result, {
         }
     }
     lines.push('');
+
+    if (caveats.length) {
+        heading(2, 'What these replies cannot show');
+        lines.push('');
+        for (const caveat of caveats) {
+            lines.push(`- ${caveat}`);
+        }
+        lines.push('');
+    }
 
     if (result?.opening) {
         heading(2, 'The scene opened with');
@@ -298,9 +398,13 @@ export function formatScene(result, {
             lines.push('');
             lines.push(markdown ? `**You:** ${turn.userText}` : `You: ${turn.userText}`);
             lines.push('');
-            const body = turn.error ? `(${turn.error})` : turn.text;
+            const text = String(turn.text ?? '');
+            const body = turn.error && !text.trim() ? `(${turn.error})` : text;
             lines.push(markdown ? `**${column.label}:** ${body}` : `${column.label}: ${body}`);
             lines.push('');
+            if (turn.error && text.trim()) {
+                lines.push(markdown ? `> Error: ${turn.error}` : `! Error: ${turn.error}`, '');
+            }
             const facts = `${describeDuration(turn.durationMs)}, prompt ${turn.promptTokens.toLocaleString()} tokens`;
             lines.push(markdown ? `*${facts}*` : `(${facts})`);
             lines.push('');
@@ -354,25 +458,60 @@ export async function runSceneComparison({
     snapshotFn = snapshotState,
     restoreFn = restoreState,
 } = {}) {
-    const fullScript = sceneTurns({ mode, turns, exchanges });
-    const from = Math.min(Math.max(Math.floor(Number(startAt)) || 1, 1), Math.max(fullScript.length, 1));
-    const script = fullScript.slice(from - 1);
+    const fullTurns = sceneTurnEntries({ mode, turns, exchanges });
+    const requestedStart = Math.max(Math.floor(Number(startAt)) || 1, 1);
+    let startIndex = fullTurns.findIndex(turn => turn.index >= requestedStart);
+    if (startIndex < 0) {
+        startIndex = Math.max(fullTurns.length - 1, 0);
+    }
+    const selectedTurns = fullTurns.slice(startIndex);
+    const script = selectedTurns.map(turn => turn.text);
     const chosen = (presets ?? []).filter(preset => preset?.name).slice(0, MAX_PRESETS);
     const opening = String(greeting ?? '').trim() ? String(greeting) : '';
     const columns = [];
-    if (!script.length || !chosen.length) {
-        return { columns, script, opening, restoreProblems: [], aborted: false };
+    const expectedRequests = script.length * chosen.length;
+    const finish = (restoreProblems = []) => {
+        const completedRequests = columns.reduce(
+            (total, column) => total + column.turns.filter(turn => !turn.waiting).length,
+            0,
+        );
+        const aborted = Boolean(signal?.aborted);
+        return {
+            columns,
+            script,
+            opening,
+            restoreProblems,
+            aborted,
+            expectedRequests,
+            completedRequests,
+            incomplete: aborted || completedRequests < expectedRequests,
+        };
+    };
+    if (!script.length || !chosen.length || signal?.aborted) {
+        return finish();
     }
 
     // Snapshotted before the first preset is applied and restored no matter how
     // this ends, so a failed send cannot leave the user on another preset.
-    const snapshot = snapshotFn(context);
+    const snapshot = await snapshotFn(context);
     let restoreProblems = [];
 
     try {
-        for (const preset of chosen) {
+        for (const [presetIndex, preset] of chosen.entries()) {
             if (signal?.aborted) {
                 break;
+            }
+            if (presetIndex) {
+                let columnRestoreProblems = [];
+                try {
+                    columnRestoreProblems = await restoreFn(context, snapshot) ?? [];
+                } catch (error) {
+                    columnRestoreProblems = [String(error?.message ?? error)];
+                }
+                if (columnRestoreProblems.length) {
+                    restoreProblems.push(...columnRestoreProblems);
+                    break;
+                }
             }
             const column = {
                 preset,
@@ -384,6 +523,11 @@ export async function runSceneComparison({
             };
             columns.push(column);
             onUpdate?.({ columns });
+            if (signal?.aborted) {
+                column.done = true;
+                onUpdate?.({ columns });
+                break;
+            }
 
             try {
                 await applyFn(context, {
@@ -391,7 +535,12 @@ export async function runSceneComparison({
                     personaKey,
                     connectionProfileId,
                     presets: [preset],
-                }, { signal });
+                }, { signal, originalState: snapshot });
+                if (signal?.aborted) {
+                    column.done = true;
+                    onUpdate?.({ columns });
+                    break;
+                }
             } catch (error) {
                 column.error = String(error?.message ?? error);
                 column.done = true;
@@ -419,27 +568,34 @@ export async function runSceneComparison({
                 }
             }
 
-            for (const [offset, userText] of script.entries()) {
+            for (const turn of selectedTurns) {
                 if (signal?.aborted) {
                     break;
                 }
-                const turnNumber = from + offset;
+                const turnNumber = turn.index;
+                const userText = turn.text;
                 onProgress?.({
                     presetName: preset.name,
                     presetIndex: columns.length,
                     presetTotal: chosen.length,
                     turn: turnNumber,
-                    turnTotal: fullScript.length,
+                    turnTotal: fullTurns.at(-1)?.index ?? 0,
                 });
+                if (signal?.aborted) {
+                    break;
+                }
 
                 scene.push({ role: 'user', text: userText });
                 let capture;
                 try {
-                    capture = await captureFn({ scene: [...scene], context, host });
+                    capture = await captureFn({ scene: [...scene], context, host, signal });
                 } catch (error) {
                     column.error = String(error?.message ?? error);
                     column.done = true;
                     onUpdate?.({ columns });
+                    break;
+                }
+                if (signal?.aborted) {
                     break;
                 }
                 for (const caveat of capture?.caveats ?? []) {
@@ -461,6 +617,11 @@ export async function runSceneComparison({
                 };
                 column.turns.push(record);
                 onUpdate?.({ columns });
+                if (signal?.aborted) {
+                    column.turns.pop();
+                    onUpdate?.({ columns });
+                    break;
+                }
 
                 const startedMs = Date.now();
                 const prompt = capture?.messages ?? capture?.combinedPrompt ?? '';
@@ -468,6 +629,11 @@ export async function runSceneComparison({
                     hostRef: context,
                     maxTokens,
                     signal,
+                    presetName: ['openai', 'textgenerationwebui'].includes(preset.apiId)
+                        ? preset.name
+                        : undefined,
+                    includePreset: true,
+                    includeInstruct: preset.apiId !== 'instruct',
                     onDelta: live
                         ? (text) => {
                             record.text = text;
@@ -476,29 +642,39 @@ export async function runSceneComparison({
                         }
                         : null,
                 });
-                record.text = String(reply?.text ?? '');
-                record.error = reply?.error ?? null;
+                const returnedText = String(reply?.text ?? '');
+                if (returnedText.trim() || !record.text) {
+                    record.text = returnedText;
+                }
+                record.error = reply?.error
+                    ?? (record.text.trim() ? null : 'The model returned an empty reply.');
                 record.durationMs = Date.now() - startedMs;
                 record.waiting = false;
                 onUpdate?.({ columns });
 
                 // A scene that stalled cannot be continued honestly: the next
                 // turn would be answering a reply that never arrived.
-                if (reply?.error || !reply?.text) {
+                if (record.error || !record.text.trim()) {
                     break;
                 }
-                scene.push({ role: 'assistant', text: reply.text });
+                scene.push({ role: 'assistant', text: record.text });
             }
             column.done = true;
             onUpdate?.({ columns });
         }
     } finally {
         try {
-            restoreProblems = await restoreFn(context, snapshot) ?? [];
+            restoreProblems = [...new Set([
+                ...restoreProblems,
+                ...(await restoreFn(context, snapshot) ?? []),
+            ])];
         } catch (error) {
-            restoreProblems = [String(error?.message ?? error)];
+            restoreProblems = [...new Set([
+                ...restoreProblems,
+                String(error?.message ?? error),
+            ])];
         }
     }
 
-    return { columns, script, opening, restoreProblems, aborted: Boolean(signal?.aborted) };
+    return finish(restoreProblems);
 }

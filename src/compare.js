@@ -1,4 +1,5 @@
 import { SECTION_LABEL } from './constants.js';
+import { canonicalOutbound, contentToText } from './message-content.js';
 
 /**
  * Compares a run against a baseline.
@@ -11,14 +12,17 @@ function sectionLabel(id) {
     return SECTION_LABEL[id] ?? id;
 }
 
-function sectionMap(run) {
-    const map = new Map();
+function sectionOccurrences(run) {
+    const occurrences = new Map();
+    const list = [];
     for (const section of run?.capture?.sections ?? []) {
         if (section?.id) {
-            map.set(section.id, section);
+            const occurrence = occurrences.get(section.id) ?? 0;
+            occurrences.set(section.id, occurrence + 1);
+            list.push({ ...section, occurrence, key: `${section.id}\u0000${occurrence}` });
         }
     }
-    return map;
+    return list;
 }
 
 /**
@@ -34,14 +38,23 @@ export function normalizeVolatile(text, spans = []) {
     let source = String(text ?? '');
     const applicable = Array.isArray(spans) ? spans.filter(Boolean) : [];
 
-    // Without an unchanged anchor there is no safe way to find a value that
-    // never repeats. The whole section is the applicable volatile region; the
-    // caller is responsible for scoping spans to that section first.
-    const wholeSection = applicable.find(span => !span?.anchorBefore
+    // Legacy runs may only have the two observed values. Replace one literal
+    // occurrence, never a whole surrounding region or every matching value.
+    const unanchored = applicable.filter(span => !span?.anchorBefore
         && !span?.anchorAfter
         && (span?.text || span?.otherText));
-    if (wholeSection) {
-        return placeholderFor(wholeSection);
+    const matches = [];
+    for (const span of unanchored) {
+        for (const candidate of new Set([span?.text, span?.otherText].filter(Boolean).map(String))) {
+            const index = source.indexOf(candidate);
+            if (index !== -1 && source.indexOf(candidate, index + candidate.length) === -1) {
+                matches.push({ span, candidate, index });
+            }
+        }
+    }
+    if (matches.length === 1) {
+        const { span, candidate, index } = matches[0];
+        source = `${source.slice(0, index)}${placeholderFor(span)}${source.slice(index + candidate.length)}`;
     }
 
     // Anchored masking first. A value that differs on every build cannot be
@@ -51,17 +64,16 @@ export function normalizeVolatile(text, spans = []) {
         const before = String(span?.anchorBefore ?? '');
         const after = String(span?.anchorAfter ?? '');
         if (before && after) {
-            const pattern = new RegExp(
-                `${escapeRegExp(before)}[\\s\\S]*?${escapeRegExp(after)}`,
-                'g',
-            );
-            source = source.replace(pattern, `${before}${placeholderFor(span)}${after}`);
-        } else if (before) {
-            const pattern = new RegExp(`${escapeRegExp(before)}[\\s\\S]*$`, 'g');
-            source = source.replace(pattern, `${before}${placeholderFor(span)}`);
-        } else if (after) {
-            const pattern = new RegExp(`^[\\s\\S]*?${escapeRegExp(after)}`, 'g');
-            source = source.replace(pattern, `${placeholderFor(span)}${after}`);
+            const start = source.indexOf(before);
+            const end = start === -1 ? -1 : source.indexOf(after, start + before.length);
+            const unique = start !== -1
+                && end !== -1
+                && source.indexOf(before, start + 1) === -1
+                && source.indexOf(after) === end
+                && source.indexOf(after, end + 1) === -1;
+            if (unique) {
+                source = `${source.slice(0, start)}${before}${placeholderFor(span)}${source.slice(end)}`;
+            }
         }
     }
 
@@ -71,39 +83,41 @@ export function normalizeVolatile(text, spans = []) {
     return source;
 }
 
-function escapeRegExp(value) {
-    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 /**
  * Compares two runs section by section.
  * @returns {{changedSections: string[], addedSections: string[], removedSections: string[],
  *   tokenDeltas: object[], totalDelta: number, identical: boolean, summary: string}}
  */
 export function compareRuns(run, baseline, { volatileSpans = [], normalize = true } = {}) {
-    const current = sectionMap(run);
-    const previous = sectionMap(baseline);
+    const current = sectionOccurrences(run);
+    const previous = sectionOccurrences(baseline);
+    const currentByKey = new Map(current.map(section => [section.key, section]));
+    const previousByKey = new Map(previous.map(section => [section.key, section]));
     const spans = normalize && Array.isArray(volatileSpans) ? volatileSpans : [];
 
-    const addedSections = [...current.keys()].filter(id => !previous.has(id));
-    const removedSections = [...previous.keys()].filter(id => !current.has(id));
+    const addedSections = current.filter(section => !previousByKey.has(section.key)).map(section => section.id);
+    const removed = previous.filter(section => !currentByKey.has(section.key));
+    const removedSections = removed.map(section => section.id);
     const changedSections = [];
     const tokenDeltas = [];
 
-    for (const [id, section] of current) {
-        const before = previous.get(id);
+    for (const section of current) {
+        const { id, occurrence } = section;
+        const before = previousByKey.get(section.key);
         const currentTokens = Number(section.tokens ?? 0);
         const baselineTokens = Number(before?.tokens ?? 0);
         if (before) {
-            const sectionSpans = spans.filter(span => !span?.section || span.section === id);
-            const a = normalizeVolatile(before.content, sectionSpans);
-            const b = normalizeVolatile(section.content, sectionSpans);
+            const sectionSpans = spans.filter(span => (!span?.section || span.section === id)
+                && (span?.occurrence === undefined || span.occurrence === occurrence));
+            const a = normalizeVolatile(contentToText(before.content), sectionSpans);
+            const b = normalizeVolatile(contentToText(section.content), sectionSpans);
             if (a !== b) {
                 changedSections.push(id);
             }
         }
         tokenDeltas.push({
             id,
+            occurrence,
             label: sectionLabel(id),
             baseline: baselineTokens,
             current: currentTokens,
@@ -112,10 +126,11 @@ export function compareRuns(run, baseline, { volatileSpans = [], normalize = tru
         });
     }
 
-    for (const id of removedSections) {
-        const before = previous.get(id);
+    for (const before of removed) {
+        const id = before.id;
         tokenDeltas.push({
             id,
+            occurrence: before?.occurrence ?? 0,
             label: sectionLabel(id),
             baseline: Number(before?.tokens ?? 0),
             current: 0,
@@ -126,9 +141,19 @@ export function compareRuns(run, baseline, { volatileSpans = [], normalize = tru
 
     const totalDelta = Number(run?.capture?.tokenTable?.total ?? 0)
         - Number(baseline?.capture?.tokenTable?.total ?? 0);
+    const currentKeys = current.map(section => section.key);
+    const previousKeys = previous.map(section => section.key);
+    const sameOccurrences = currentKeys.length === previousKeys.length
+        && currentKeys.every(key => previousByKey.has(key));
+    const sectionOrderChanged = sameOccurrences
+        && currentKeys.some((key, index) => key !== previousKeys[index]);
+    const outboundChanged = canonicalIdentity(run?.capture, spans)
+        !== canonicalIdentity(baseline?.capture, spans);
     const identical = changedSections.length === 0
         && addedSections.length === 0
-        && removedSections.length === 0;
+        && removedSections.length === 0
+        && !sectionOrderChanged
+        && !outboundChanged;
 
     return {
         changedSections,
@@ -136,16 +161,42 @@ export function compareRuns(run, baseline, { volatileSpans = [], normalize = tru
         removedSections,
         tokenDeltas,
         totalDelta,
+        sectionOrderChanged,
+        outboundChanged,
         identical,
-        summary: describeComparison({ changedSections, addedSections, removedSections, totalDelta }),
+        summary: describeComparison({
+            changedSections,
+            addedSections,
+            removedSections,
+            totalDelta,
+            sectionOrderChanged,
+            outboundChanged,
+        }),
     };
+}
+
+function canonicalIdentity(capture, spans) {
+    try {
+        return canonicalOutbound(capture, {
+            mapText: text => normalizeVolatile(text, spans),
+        });
+    } catch {
+        return null;
+    }
 }
 
 function plural(count, word) {
     return `${count} ${word}${count === 1 ? '' : 's'}`;
 }
 
-export function describeComparison({ changedSections, addedSections, removedSections, totalDelta }) {
+export function describeComparison({
+    changedSections = [],
+    addedSections = [],
+    removedSections = [],
+    totalDelta = 0,
+    sectionOrderChanged = false,
+    outboundChanged = false,
+}) {
     const parts = [];
     if (changedSections.length) {
         parts.push(`${plural(changedSections.length, 'section')} changed`);
@@ -155,6 +206,12 @@ export function describeComparison({ changedSections, addedSections, removedSect
     }
     if (removedSections.length) {
         parts.push(`${plural(removedSections.length, 'section')} removed`);
+    }
+    if (sectionOrderChanged) {
+        parts.push('section order changed');
+    }
+    if (outboundChanged && !changedSections.length && !addedSections.length && !removedSections.length) {
+        parts.push('the final outbound prompt changed');
     }
     if (!parts.length) {
         return 'This prompt is the same as the baseline.';
@@ -177,29 +234,70 @@ export function findVolatileSpans(first, second) {
         return [];
     }
     const spans = [];
-    const firstSections = sectionMap(first);
-    const secondSections = sectionMap(second);
+    const firstSections = sectionOccurrences(first);
+    const secondSections = new Map(sectionOccurrences(second).map(section => [section.key, section]));
 
-    for (const [id, section] of firstSections) {
-        const other = secondSections.get(id);
-        if (!other || other.content === section.content) {
+    for (const section of firstSections) {
+        const id = section.id;
+        const other = secondSections.get(section.key);
+        const content = contentToText(section.content);
+        const otherContent = contentToText(other?.content);
+        if (!other || otherContent === content) {
             continue;
         }
-        const span = differingSpan(section.content, other.content);
+        if (differenceHunkCount(content, otherContent) !== 1) {
+            return [];
+        }
+        const span = differingSpan(content, otherContent);
         if (span) {
             // The value itself is different every run, so a later comparison
             // cannot find it by its text. The unchanged text on either side is
             // what stays put, so record that too and mask what sits between.
             spans.push({
                 section: id,
+                occurrence: section.occurrence,
                 text: span.a,
                 otherText: span.b,
-                anchorBefore: section.content.slice(Math.max(0, span.start - ANCHOR_LENGTH), span.start),
-                anchorAfter: section.content.slice(span.start + span.a.length, span.start + span.a.length + ANCHOR_LENGTH),
+                anchorBefore: content.slice(Math.max(0, span.start - ANCHOR_LENGTH), span.start),
+                anchorAfter: content.slice(span.start + span.a.length, span.start + span.a.length + ANCHOR_LENGTH),
             });
+            if (spans.length > 1) {
+                return [];
+            }
         }
     }
     return spans;
+}
+
+function differenceHunkCount(first, second) {
+    const Engine = globalThis.diff_match_patch;
+    if (typeof Engine === 'function') {
+        const parts = new Engine().diff_main(first, second);
+        let count = 0;
+        let changing = false;
+        for (const [operation, text] of parts) {
+            if (!text) {
+                continue;
+            }
+            if (operation === 0) {
+                changing = false;
+            } else if (!changing) {
+                count += 1;
+                changing = true;
+            }
+        }
+        return count;
+    }
+
+    const span = differingSpan(first, second);
+    if (!span) {
+        return 0;
+    }
+    // ponytail: the host supplies diff-match-patch. Without it, any shared
+    // character inside the broad replacement could be a stable middle hunk,
+    // so reject normalization rather than hide an edit.
+    const firstCharacters = new Set(span.a);
+    return [...span.b].some(character => firstCharacters.has(character)) ? 2 : 1;
 }
 
 /** Narrows two strings down to the part between their common ends. */

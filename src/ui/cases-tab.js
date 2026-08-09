@@ -2,6 +2,7 @@ import { ASSERTION, ASSERTION_LABEL, SECTION_LABEL } from '../constants.js';
 import { button, confirmButton, element, emptyState, errorMessage, field, promptField, replace, statusRegion } from '../dom.js';
 import { getContext } from '../host.js';
 import * as lab from '../lab.js';
+import { registerActiveTask } from '../operations.js';
 import { MODE, PRESET_API_IDS, labelForApiId, modeOf } from '../presets.js';
 import { createCase, createSuite, pinnedMode, validateCase } from '../schema.js';
 import * as storage from '../storage.js';
@@ -28,15 +29,23 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
     let cases = [];
     let editing = null;
     let selected = new Set();
+    let reloadEpoch = 0;
 
-    async function reload({ keepEditor = false } = {}) {
-        suites = await storage.listSuites();
-        if (!activeSuite || !suites.some(suite => suite.id === activeSuite.id)) {
-            activeSuite = suites[0] ?? null;
-        } else {
-            activeSuite = suites.find(suite => suite.id === activeSuite.id) ?? null;
+    async function reload({ keepEditor = false, preferredSuiteId = '' } = {}) {
+        const epoch = ++reloadEpoch;
+        const suiteId = preferredSuiteId || activeSuite?.id;
+        const nextSuites = await storage.listSuites();
+        if (epoch !== reloadEpoch || !root) {
+            return;
         }
-        cases = activeSuite ? await lab.getSuiteCases(activeSuite) : [];
+        const nextSuite = nextSuites.find(suite => suite.id === suiteId) ?? nextSuites[0] ?? null;
+        const nextCases = nextSuite ? await lab.getSuiteCases(nextSuite) : [];
+        if (epoch !== reloadEpoch || !root) {
+            return;
+        }
+        suites = nextSuites;
+        activeSuite = nextSuite;
+        cases = nextCases;
         selected = new Set([...selected].filter(id => cases.some(item => item.id === id)));
         renderAll({ keepEditor });
         onChanged?.();
@@ -119,6 +128,7 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
 
         const list = element('ul', { className: 'sbpl-case-list' });
         for (const testCase of shown) {
+            const suiteId = activeSuite.id;
             const item = element('li', { className: 'sbpl-case-item' });
 
             const pick = element('input', { className: 'sbpl-checkbox', attributes: { type: 'checkbox' } });
@@ -154,16 +164,26 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
                     void duplicate([testCase]);
                 }, { className: 'menu_button sbpl-button' }),
                 confirmButton('Delete', async () => {
-                    await storage.deleteCase(testCase.id);
-                    if (editing?.id === testCase.id) {
-                        editing = null;
+                    const caseId = testCase.id;
+                    const editor = editing;
+                    const task = registerActiveTask('case deletion');
+                    try {
+                        await storage.deleteCase(caseId);
+                        if (editing === editor && editing?.id === caseId) {
+                            editing = null;
+                        }
+                        status.textContent = `Deleted "${testCase.name}". Its saved runs went with it.`;
+                        await reload();
+                    } finally {
+                        task.release();
                     }
-                    status.textContent = `Deleted "${testCase.name}". Its saved runs went with it.`;
-                    await reload();
                 }, { className: 'menu_button sbpl-button', confirmLabel: 'Press again to delete' }),
             );
             if (onQuickRun) {
-                actions.prepend(button('Run this one', () => onQuickRun(testCase), {
+                actions.prepend(button('Run this one', () => onQuickRun({
+                    ...structuredClone(testCase),
+                    suiteId,
+                }), {
                     className: 'menu_button sbpl-button',
                 }));
             }
@@ -206,23 +226,35 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
                     if (!tag) {
                         return;
                     }
-                    for (const testCase of chosen()) {
-                        if (!testCase.tags.includes(tag)) {
-                            await storage.saveCase({ ...testCase, tags: [...testCase.tags, tag] });
+                    const chosenCases = chosen().map(testCase => structuredClone(testCase));
+                    const task = registerActiveTask('case tagging');
+                    try {
+                        for (const testCase of chosenCases) {
+                            if (!testCase.tags.includes(tag)) {
+                                await storage.saveCase({ ...testCase, tags: [...testCase.tags, tag] });
+                            }
                         }
+                        status.textContent = `Tagged ${chosenCases.length} test case${chosenCases.length === 1 ? '' : 's'} with "${tag}".`;
+                        await reload();
+                    } finally {
+                        task.release();
                     }
-                    status.textContent = `Tagged ${selected.size} test case${selected.size === 1 ? '' : 's'} with "${tag}".`;
-                    await reload();
                 }, { className: 'menu_button sbpl-button' }),
                 confirmButton('Delete', async () => {
-                    const count = selected.size;
-                    for (const testCase of chosen()) {
-                        await storage.deleteCase(testCase.id);
+                    const chosenCases = chosen().map(testCase => structuredClone(testCase));
+                    const count = chosenCases.length;
+                    const task = registerActiveTask('case bulk deletion');
+                    try {
+                        for (const testCase of chosenCases) {
+                            await storage.deleteCase(testCase.id);
+                        }
+                        selected.clear();
+                        editing = null;
+                        status.textContent = `Deleted ${count} test case${count === 1 ? '' : 's'}, along with their saved runs.`;
+                        await reload();
+                    } finally {
+                        task.release();
                     }
-                    selected.clear();
-                    editing = null;
-                    status.textContent = `Deleted ${count} test case${count === 1 ? '' : 's'}, along with their saved runs.`;
-                    await reload();
                 }, { className: 'menu_button sbpl-button', confirmLabel: 'Press again to delete' }),
             );
         }
@@ -230,14 +262,27 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
     }
 
     async function duplicate(list) {
-        for (const testCase of list) {
-            const copy = createCase({ ...structuredClone(testCase), id: undefined, name: `${testCase.name} (copy)` });
-            const saved = await storage.saveCase(copy);
-            await storage.saveSuite({ ...activeSuite, caseIds: [...activeSuite.caseIds, saved.id] });
-            activeSuite = await storage.getSuite(activeSuite.id);
+        const suiteId = activeSuite?.id;
+        const sourceCases = list.map(testCase => structuredClone(testCase));
+        if (!suiteId || !sourceCases.length) {
+            return;
         }
-        status.textContent = `Duplicated ${list.length} test case${list.length === 1 ? '' : 's'}.`;
-        await reload();
+        const task = registerActiveTask('case duplication');
+        try {
+            const ids = [];
+            for (const testCase of sourceCases) {
+                const copy = createCase({ ...structuredClone(testCase), id: undefined, name: `${testCase.name} (copy)` });
+                const saved = await storage.saveCase(copy);
+                ids.push(saved.id);
+            }
+            await storage.updateSuite(suiteId, (suite) => {
+                suite.caseIds.push(...ids.filter(id => !suite.caseIds.includes(id)));
+            });
+            status.textContent = `Duplicated ${sourceCases.length} test case${sourceCases.length === 1 ? '' : 's'}.`;
+            await reload();
+        } finally {
+            task.release();
+        }
     }
 
     function optionList(select, items, { valueKey, labelKey, includeBlank = '' }) {
@@ -276,7 +321,12 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
         });
 
         const personaSelect = element('select', { className: 'text_pole sbpl-select' });
-        optionList(personaSelect, options.personas, {
+        const personas = [...options.personas];
+        const pinnedPersona = editing.pins.personaKey;
+        if (pinnedPersona && !personas.some(persona => persona.key === pinnedPersona)) {
+            personas.push({ key: pinnedPersona, name: `${pinnedPersona} (not installed)` });
+        }
+        optionList(personaSelect, personas, {
             valueKey: 'key',
             labelKey: 'name',
             includeBlank: 'Leave the persona as it is',
@@ -287,7 +337,12 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
         });
 
         const profileSelect = element('select', { className: 'text_pole sbpl-select' });
-        optionList(profileSelect, options.profiles, {
+        const profiles = [...options.profiles];
+        const pinnedProfile = editing.pins.connectionProfileId;
+        if (pinnedProfile && !profiles.some(profile => profile.id === pinnedProfile)) {
+            profiles.push({ id: pinnedProfile, name: `${pinnedProfile} (not installed)` });
+        }
+        optionList(profileSelect, profiles, {
             valueKey: 'id',
             labelKey: 'name',
             includeBlank: 'Leave the connection as it is',
@@ -358,21 +413,30 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
 
         const problems = element('ul', { className: 'sbpl-problems' });
         const save = button('Save test case', async () => {
-            const found = validateCase(editing);
+            const editor = editing;
+            const payload = structuredClone(editor);
+            const suiteId = activeSuite?.id;
+            const found = validateCase(payload);
             replace(problems, ...found.map(text => element('li', { text })));
-            if (found.length) {
+            if (found.length || !suiteId) {
                 return;
             }
-            const saved = await storage.saveCase(editing);
-            if (!activeSuite.caseIds.includes(saved.id)) {
-                await storage.saveSuite({
-                    ...activeSuite,
-                    caseIds: [...activeSuite.caseIds, saved.id],
+            const task = registerActiveTask('case save');
+            try {
+                const saved = await storage.saveCase(payload);
+                await storage.updateSuite(suiteId, (suite) => {
+                    if (!suite.caseIds.includes(saved.id)) {
+                        suite.caseIds.push(saved.id);
+                    }
                 });
+                if (editing === editor) {
+                    editing = null;
+                }
+                status.textContent = `Saved "${saved.name}".`;
+                await reload({ keepEditor: Boolean(editing) });
+            } finally {
+                task.release();
             }
-            editing = null;
-            status.textContent = `Saved "${saved.name}".`;
-            await reload();
         }, { className: 'menu_button menu_button_primary sbpl-button' });
 
         const cancel = button('Cancel', () => {
@@ -394,20 +458,24 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
         const wrapper = element('div', { className: 'sbpl-preset-pins' });
         wrapper.append(element('p', { className: 'sbpl-field-label', text: 'Presets' }));
         const mode = pinnedMode(editing.pins);
-        for (const apiId of PRESET_API_IDS) {
+        const apiIds = [...new Set([
+            ...PRESET_API_IDS,
+            ...editing.pins.presets.map(ref => ref.apiId),
+        ])];
+        for (const apiId of apiIds) {
             const installed = options.presets[apiId] ?? [];
             const pinned = editing.pins.presets.find(ref => ref.apiId === apiId);
             if (!installed.length && !pinned) {
                 continue;
             }
-            const choices = installed.map(name => ({ name }));
+            const choices = installed.map(name => ({ name, label: name }));
             if (pinned && !installed.includes(pinned.name)) {
-                choices.push({ name: pinned.name });
+                choices.push({ name: pinned.name, label: `${pinned.name} (not installed)` });
             }
             const select = element('select', { className: 'text_pole sbpl-select' });
             optionList(select, choices, {
                 valueKey: 'name',
-                labelKey: 'name',
+                labelKey: 'label',
                 includeBlank: 'Leave as it is',
             });
             select.value = pinned?.name ?? '';
@@ -654,32 +722,43 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
         const create = button('Create test cases', async () => {
             const avatars = [...characterList.selectedOptions].map(option => option.value);
             const presets = [...presetList.selectedOptions].map(option => option.value);
+            const suiteId = activeSuite?.id;
             if (!avatars.length || !presets.length) {
                 status.textContent = 'Pick at least one character and one preset.';
                 return;
             }
-            const apiId = kindSelect.value;
-            const shared = editing?.pins?.presets?.filter(ref => (
-                ref.apiId !== apiId && modeOf(ref.apiId) === modeOf(apiId)
-            )) ?? [];
-            const ids = [];
-            for (const avatar of avatars) {
-                const character = options.characters.find(item => item.avatar === avatar);
-                for (const preset of presets) {
-                    const testCase = createCase({
-                        name: `${character?.name ?? avatar} · ${preset}`,
-                        pins: {
-                            characterAvatar: avatar,
-                            presets: [...shared, { apiId, name: preset }],
-                        },
-                    });
-                    const saved = await storage.saveCase(testCase);
-                    ids.push(saved.id);
-                }
+            if (!suiteId) {
+                return;
             }
-            await storage.saveSuite({ ...activeSuite, caseIds: [...activeSuite.caseIds, ...ids] });
-            status.textContent = `Created ${ids.length} test cases.`;
-            await reload();
+            const apiId = kindSelect.value;
+            const shared = structuredClone(editing?.pins?.presets?.filter(ref => (
+                ref.apiId !== apiId && modeOf(ref.apiId) === modeOf(apiId)
+            )) ?? []);
+            const task = registerActiveTask('case matrix creation');
+            try {
+                const ids = [];
+                for (const avatar of avatars) {
+                    const character = options.characters.find(item => item.avatar === avatar);
+                    for (const preset of presets) {
+                        const testCase = createCase({
+                            name: `${character?.name ?? avatar} · ${preset}`,
+                            pins: {
+                                characterAvatar: avatar,
+                                presets: [...shared, { apiId, name: preset }],
+                            },
+                        });
+                        const saved = await storage.saveCase(testCase);
+                        ids.push(saved.id);
+                    }
+                }
+                await storage.updateSuite(suiteId, (suite) => {
+                    suite.caseIds.push(...ids.filter(id => !suite.caseIds.includes(id)));
+                });
+                status.textContent = `Created ${ids.length} test cases.`;
+                await reload();
+            } finally {
+                task.release();
+            }
         }, { className: 'menu_button sbpl-button' });
 
         const grid = element('div', { className: 'sbpl-matrix-grid' });
@@ -710,10 +789,19 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
             attributes: { 'aria-label': 'Suite' },
         });
         suiteSelect.addEventListener('change', async () => {
-            activeSuite = suites.find(suite => suite.id === suiteSelect.value) ?? null;
+            const suiteId = suiteSelect.value;
+            const suite = suites.find(item => item.id === suiteId) ?? null;
+            const epoch = ++reloadEpoch;
+            activeSuite = suite;
             editing = null;
             selected.clear();
-            cases = activeSuite ? await lab.getSuiteCases(activeSuite) : [];
+            cases = [];
+            renderAll();
+            const nextCases = suite ? await lab.getSuiteCases(suite) : [];
+            if (epoch !== reloadEpoch || activeSuite?.id !== suiteId || !root) {
+                return;
+            }
+            cases = nextCases;
             renderAll();
         });
 
@@ -724,10 +812,20 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
         searchInput.addEventListener('input', renderList);
 
         const newSuite = button('Create suite', async () => {
-            const suite = await storage.saveSuite(createSuite({ name: `Suite ${suites.length + 1}` }));
-            activeSuite = suite;
-            status.textContent = `Created "${suite.name}".`;
-            await reload();
+            const payload = createSuite({ name: `Suite ${suites.length + 1}` });
+            const previousSuiteId = activeSuite?.id ?? '';
+            const epoch = reloadEpoch;
+            const task = registerActiveTask('suite creation');
+            try {
+                const suite = await storage.saveSuite(payload);
+                const preferredSuiteId = epoch === reloadEpoch && (activeSuite?.id ?? '') === previousSuiteId
+                    ? suite.id
+                    : activeSuite?.id;
+                status.textContent = `Created "${suite.name}".`;
+                await reload({ preferredSuiteId });
+            } finally {
+                task.release();
+            }
         }, { className: 'menu_button sbpl-button' });
 
         const newCase = button('Add test case', () => {
@@ -769,6 +867,7 @@ export function createCasesTab({ onChanged = null, onQuickRun = null } = {}) {
             void reload({ keepEditor: true }).catch(() => {});
         },
         dispose() {
+            reloadEpoch++;
             root?.remove();
             root = null;
         },

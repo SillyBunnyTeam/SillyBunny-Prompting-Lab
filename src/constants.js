@@ -5,14 +5,14 @@ export const EMBED_KEY = 'SillyBunnyPromptingLab';
 export const DB_NAME = 'SillyBunnyPromptingLab';
 
 export const EXPORT_FORMAT = 'sillybunny-prompting-lab';
-export const EXPORT_VERSION = 2;
+export const EXPORT_VERSION = 3;
 
 export const SETTINGS_VERSION = 1;
 export const CASE_VERSION = 2;
 export const DRAFT_VERSION = 1;
 export const PROMPT_DRAFT_VERSION = 1;
 export const SUITE_VERSION = 1;
-export const RUN_VERSION = 1;
+export const RUN_VERSION = 2;
 export const EMBED_VERSION = 1;
 
 export const STORE_PREFIX = Object.freeze({
@@ -35,6 +35,7 @@ export const INDEX_KEY = Object.freeze({
 export const STATUS = Object.freeze({
     PASS: 'pass',
     CHANGED: 'changed',
+    UNCHECKED: 'unchecked',
     FAIL: 'fail',
     ERROR: 'error',
     SKIPPED: 'skipped',
@@ -43,6 +44,7 @@ export const STATUS = Object.freeze({
 export const STATUS_LABEL = Object.freeze({
     [STATUS.PASS]: 'Passed',
     [STATUS.CHANGED]: 'Changed',
+    [STATUS.UNCHECKED]: 'Needs review',
     [STATUS.FAIL]: 'Failed',
     [STATUS.ERROR]: 'Could not run',
     [STATUS.SKIPPED]: 'Skipped',
@@ -69,6 +71,7 @@ export const SECTION_LABEL = Object.freeze({
     mesExmString: 'Example messages',
     mesSendString: 'Chat history',
     finalMesSend: 'Chat history (final)',
+    finalInterceptors: 'Final interceptor output',
     worldInfoString: 'World Info',
     description: 'Character description',
     personality: 'Character personality',
@@ -109,16 +112,24 @@ export const CAVEAT = Object.freeze({
     CACHE_BOUNDARY_PREDICTED: 'cache-boundary-predicted',
     TOKENIZER_FALLBACK: 'tokenizer-fallback',
     EXISTING_CHAT: 'existing-chat',
+    LIVE_CHAT_DRY_RUN: 'live-chat-dry-run',
+    MACRO_SANDBOX_UNAVAILABLE: 'macro-sandbox-unavailable',
+    MACRO_ROLLBACK_UNCONFIRMED: 'macro-rollback-unconfirmed',
+    FINAL_METRICS_INCOMPLETE: 'final-metrics-incomplete',
 });
 
 export const CAVEAT_TEXT = Object.freeze({
-    [CAVEAT.NO_INTERCEPTORS]: 'Extensions that rewrite chat history before sending, such as vector storage and summaries, do not run during a test. A real reply may include content this test does not show.',
+    [CAVEAT.NO_INTERCEPTORS]: 'SillyBunny skips send-only generation interceptors during dry runs. The captured prompt and its checks are provisional, not the exact request a real send would use.',
     [CAVEAT.NO_SQUASH_LIVE]: 'Your setup merges consecutive system messages when sending. This analysis models that grouping itself rather than observing a real send, so message grouping may differ slightly.',
     [CAVEAT.PROMPT_TAGS_MISSING]: 'This test pins a Prompt Tags profile, but the Prompt Tags extension is not installed or enabled.',
     [CAVEAT.CACHE_DEPTH_UNKNOWN]: 'The prompt caching depth is unknown, so cache checks were skipped. Set it in Prompting Lab settings.',
     [CAVEAT.CACHE_BOUNDARY_PREDICTED]: 'Cache boundaries are predictions inferred from the captured prompt. The server does not report the actual boundary; this analysis follows Claude-style caching.',
     [CAVEAT.TOKENIZER_FALLBACK]: 'Token counts are estimates because the tokenizer was unavailable.',
     [CAVEAT.EXISTING_CHAT]: 'This character already had a chat open, and everything in it was part of the prompt, underneath the opening chosen here. Start a new chat in SillyBunny for a scene that begins where you think it does.',
+    [CAVEAT.LIVE_CHAT_DRY_RUN]: 'SillyBunny has no isolated synthetic-message prompt builder. Generation starts observed while the test message is in live memory are held until it is removed; an overlapping test capture is discarded.',
+    [CAVEAT.MACRO_SANDBOX_UNAVAILABLE]: 'SillyBunny has no sandboxed dry-run macro API. Prompting Lab restores accessible local, global, and Macro Enhanced state and requests host saves, but cannot undo external macro side effects.',
+    [CAVEAT.MACRO_ROLLBACK_UNCONFIRMED]: 'Prompting Lab restored macro state in memory, but this SillyBunny build could not perform or confirm every persistence save needed for that rollback.',
+    [CAVEAT.FINAL_METRICS_INCOMPLETE]: 'An observed dry-run hook changed the outbound messages after section token counts were built, so section and token metrics are incomplete. Send-only interceptors remain unobserved.',
 });
 
 export const TAB = Object.freeze({

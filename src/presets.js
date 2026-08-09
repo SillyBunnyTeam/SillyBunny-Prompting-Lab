@@ -234,6 +234,10 @@ export function addPromptModule(payload, prompt) {
 
 /** Updates a prompt definition in place, keeping fields this editor never shows. */
 export function updatePromptModule(payload, identifier, changes) {
+    if ((Array.isArray(payload?.prompts) ? payload.prompts : [])
+        .some(prompt => prompt?.identifier === identifier && !canEditPrompt(prompt))) {
+        return structuredClone(payload ?? {});
+    }
     const next = structuredClone(payload ?? {});
     next.prompts = (Array.isArray(next.prompts) ? next.prompts : []).map(prompt => (
         prompt?.identifier === identifier ? { ...prompt, ...changes } : prompt
@@ -241,20 +245,29 @@ export function updatePromptModule(payload, identifier, changes) {
     return next;
 }
 
-/** Removes a custom prompt definition and its order entry. */
+/** Removes an allowed prompt definition and its order entry. */
 export function removePromptModule(payload, identifier) {
+    if ((Array.isArray(payload?.prompts) ? payload.prompts : [])
+        .some(prompt => prompt?.identifier === identifier && !canRemovePrompt(prompt))) {
+        return structuredClone(payload ?? {});
+    }
     const next = structuredClone(payload ?? {});
     next.prompts = (Array.isArray(next.prompts) ? next.prompts : []).filter(prompt => prompt?.identifier !== identifier);
     const order = getPromptOrder(next).filter(item => item.identifier !== identifier);
     return withPromptOrder(next, order);
 }
 
-/**
- * Prompts SillyBunny fills in itself. Their text cannot be edited and they
- * must keep their identifier.
- */
+/** Prompt identities that must survive copy and paste unchanged. */
 export function isReservedPrompt(prompt) {
     return Boolean(prompt?.marker) || Boolean(prompt?.system_prompt);
+}
+
+export function canEditPrompt(prompt) {
+    return !Boolean(prompt?.marker);
+}
+
+export function canRemovePrompt(prompt) {
+    return !Boolean(prompt?.system_prompt);
 }
 
 /**

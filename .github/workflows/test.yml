@@ -14,9 +14,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
       - run: npm test
-      - run: npm run test:browser
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npm run test:browser:all
+
+  host-contract:
+    name: Host contract (${{ matrix.host-ref }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        host-ref: ['1.7.0', main]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check out SillyBunny
+        env:
+          HOST_REF: ${{ matrix.host-ref }}
+        run: git clone --depth 1 --branch "$HOST_REF" https://github.com/SillyBunnyTeam/SillyBunny.git "$RUNNER_TEMP/SillyBunny"
+      - run: npm run test:host
+        env:
+          SILLYBUNNY_ROOT: ${{ runner.temp }}/SillyBunny

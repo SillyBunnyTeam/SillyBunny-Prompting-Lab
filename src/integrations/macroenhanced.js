@@ -1,4 +1,5 @@
 import { ctxOf } from '../host.js';
+import { stableStringify } from '../message-content.js';
 
 /**
  * Reads the Macro Enhanced extension's configuration.
@@ -22,8 +23,29 @@ function customMacroFingerprint(definitions) {
         .map(definition => ({
             name: String(definition?.name ?? ''),
             template: String(definition?.template ?? ''),
+            args: (Array.isArray(definition?.args) ? definition.args : []).map(argument => ({
+                name: String(argument?.name ?? ''),
+                optional: Boolean(argument?.optional),
+                defaultValue: String(argument?.defaultValue ?? ''),
+            })),
         }))
-        .sort((a, b) => a.name.localeCompare(b.name));
+        .sort((a, b) => a.name.localeCompare(b.name) || stableStringify(a).localeCompare(stableStringify(b)));
+}
+
+function hashValue(value) {
+    const text = String(stableStringify(value) ?? '');
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash.toString(16).padStart(8, '0');
+}
+
+function valueHashes(values) {
+    return Object.entries(values && typeof values === 'object' ? values : {})
+        .map(([key, value]) => ({ key, hash: hashValue(value) }))
+        .sort((a, b) => a.key.localeCompare(b.key));
 }
 
 export function readMacroEnhanced(hostRef) {
@@ -51,6 +73,13 @@ export function readMacroEnhanced(hostRef) {
         dailyKeys: Object.keys(chatState?.daily ?? {}).sort(),
         rollKeys: Object.keys(chatState?.rolls ?? {}).sort(),
         chatVarNames: Object.keys(chatState?.chatVars ?? {}).sort(),
+        frozenValues: valueHashes(chatState?.frozen),
+        stickyValues: valueHashes(chatState?.sticky),
+        dailyValues: valueHashes(chatState?.daily),
+        rollValues: valueHashes(chatState?.rolls),
+        chatVarValues: valueHashes(chatState?.chatVars),
+        countersHash: hashValue(chatState?.counters ?? {}),
+        pronounsHash: hashValue(chatState?.pronouns ?? {}),
     };
 }
 

@@ -10,6 +10,7 @@ const {
     clearSettings,
     dismissWarning,
     getSettings,
+    isSettingsReadOnly,
     isWarningDismissed,
     migrateSettings,
     normalizeSettings,
@@ -80,6 +81,30 @@ test('migrateSettings normalizes an unversioned blob', () => {
     const settings = migrateSettings({ runRetention: 5 });
     assert.equal(settings.schemaVersion, 1);
     assert.equal(settings.runRetention, 5);
+});
+
+test('future settings stay untouched while runtime reads and writes use a current view', () => {
+    const ctx = freshContext();
+    let saves = 0;
+    ctx.saveSettingsDebounced = () => { saves++; };
+    const future = {
+        schemaVersion: 99,
+        lastTab: 'future-tab',
+        future: { exact: ['data', 1] },
+    };
+    const before = JSON.stringify(future);
+    ctx.extensionSettings[SETTINGS_KEY] = future;
+
+    assert.strictEqual(migrateSettings(future), future);
+    const runtime = getSettings();
+    assert.equal(runtime.schemaVersion, 1);
+    assert.equal(runtime.lastTab, TAB.CASES);
+    assert.equal(runtime.runRetention, 20);
+    assert.equal(isSettingsReadOnly(), true);
+    assert.deepEqual(updateSettings({ runRetention: 5 }), runtime);
+    assert.strictEqual(ctx.extensionSettings[SETTINGS_KEY], future);
+    assert.equal(JSON.stringify(ctx.extensionSettings[SETTINGS_KEY]), before);
+    assert.equal(saves, 0);
 });
 
 test('getSettings writes the repaired object back into the host settings', () => {

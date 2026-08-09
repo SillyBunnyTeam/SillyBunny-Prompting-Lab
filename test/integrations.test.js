@@ -8,6 +8,7 @@ installStubContext();
 const { collectIntegrations } = await import('../src/integrations/index.js');
 const { isPromptTagsAvailable, listPromptTagsProfiles, readPromptTags } = await import('../src/integrations/prompttags.js');
 const { macroConfigDiffers, readMacroEnhanced } = await import('../src/integrations/macroenhanced.js');
+const { CLASS_STABLE, CLASS_STATE, classifyName } = await import('../src/vendor/volatility.js');
 
 test.after(() => removeStubContext());
 
@@ -28,6 +29,15 @@ test('Prompt Tags is reported as absent when it is not installed', () => {
     assert.equal(isPromptTagsAvailable(context), false);
     assert.equal(readPromptTags(context), null);
     assert.deepEqual(listPromptTagsProfiles(context), []);
+});
+
+test('Prompt Tags is unavailable when the host has disabled the extension', () => {
+    const context = contextWith({
+        disabledExtensions: ['third-party/SillyBunny-PromptTags'],
+        promptTags: { enabled: true, profiles: {} },
+    });
+    assert.equal(isPromptTagsAvailable(context), false);
+    assert.equal(readPromptTags(context).enabled, false);
 });
 
 test('the active Prompt Tags profile and its wrapped sections are recorded', () => {
@@ -72,6 +82,26 @@ test('a Prompt Tags blob with no active profile is still readable', () => {
     assert.deepEqual(recorded.enabledSections, []);
 });
 
+test('Prompt Tags reports the effective scoped profile, not only the global one', () => {
+    const recorded = readPromptTags(contextWith({
+        promptTags: {
+            enabled: true,
+            activeProfile: 'Global',
+            activeProfileId: 'one',
+            profiles: {
+                Global: { id: 'one', rules: {} },
+                Chat: { id: 'two', rules: { main: { enabled: true } } },
+            },
+        },
+    }, {
+        chatMetadata: { promptTags: { profileId: 'two' } },
+    }));
+    assert.equal(recorded.profileName, 'Chat');
+    assert.equal(recorded.profileId, 'two');
+    assert.equal(recorded.scope, 'chat');
+    assert.deepEqual(recorded.enabledSections, ['main']);
+});
+
 /* --------------------------------------------------------- macro enhanced */
 
 test('Macro Enhanced is reported as absent when it is not installed', () => {
@@ -113,13 +143,15 @@ test('macro configuration is recorded across all three scopes', () => {
     assert.equal(recorded.settingsVersion, 3);
     assert.equal(recorded.compatExpressions, true);
     assert.equal(recorded.manualCachingAtDepth, 2);
-    assert.deepEqual(recorded.globalMacros, [{ name: 'greeting', template: 'hello' }]);
-    assert.deepEqual(recorded.characterMacros, [{ name: 'cardMacro', template: 'c' }]);
-    assert.deepEqual(recorded.chatMacros, [{ name: 'chatMacro', template: 'z' }]);
+    assert.deepEqual(recorded.globalMacros, [{ name: 'greeting', template: 'hello', args: [] }]);
+    assert.deepEqual(recorded.characterMacros, [{ name: 'cardMacro', template: 'c', args: [] }]);
+    assert.deepEqual(recorded.chatMacros, [{ name: 'chatMacro', template: 'z', args: [] }]);
     assert.deepEqual(recorded.frozenKeys, ['mood']);
     assert.deepEqual(recorded.dailyKeys, ['quest']);
     assert.deepEqual(recorded.rollKeys, ['luck']);
     assert.deepEqual(recorded.chatVarNames, ['arc']);
+    assert.equal(recorded.chatVarValues[0].key, 'arc');
+    assert.match(recorded.chatVarValues[0].hash, /^[0-9a-f]{8}$/);
 });
 
 test('macro names are recorded in a stable order so a reorder is not a change', () => {
@@ -140,6 +172,37 @@ test('a changed macro template is reported as a difference', () => {
         MacroEnhanced: { customMacros: [{ name: 'a', template: 'two' }] },
     }));
     assert.equal(macroConfigDiffers(before, after), true);
+});
+
+test('macro argument definitions and state values affect the fingerprint', () => {
+    const before = readMacroEnhanced(contextWith({
+        MacroEnhanced: {
+            customMacros: [{
+                name: 'greet',
+                template: 'Hello {{who}}',
+                args: [{ name: 'who', optional: true, defaultValue: 'friend' }],
+            }],
+        },
+    }, {
+        chatMetadata: { MacroEnhanced: { chatVars: { mood: 'calm' } } },
+    }));
+    const after = readMacroEnhanced(contextWith({
+        MacroEnhanced: {
+            customMacros: [{
+                name: 'greet',
+                template: 'Hello {{who}}',
+                args: [{ name: 'who', optional: true, defaultValue: 'stranger' }],
+            }],
+        },
+    }, {
+        chatMetadata: { MacroEnhanced: { chatVars: { mood: 'angry' } } },
+    }));
+    assert.equal(macroConfigDiffers(before, after), true);
+});
+
+test('vendored volatility rules include current pronoun macros', () => {
+    assert.equal(classifyName('setpronouns').cls, CLASS_STATE);
+    assert.equal(classifyName('charpronouns').cls, CLASS_STABLE);
 });
 
 test('macroConfigDiffers copes with one side missing', () => {

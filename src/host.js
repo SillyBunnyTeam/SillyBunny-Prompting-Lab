@@ -141,12 +141,13 @@ export async function countTokens(text) {
  * The security token can expire while the page is open. SillyBunny refreshes
  * it from script.js, so one retry is attempted before giving up.
  */
-export async function requestJson(url, body) {
+export async function requestJson(url, body, { signal } = {}) {
     const context = getContext();
     const send = async () => fetch(url, {
         method: 'POST',
         headers: context?.getRequestHeaders?.() ?? { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal,
     });
     let response = await send();
     if (response.status === 403) {
@@ -155,6 +156,7 @@ export async function requestJson(url, body) {
             await script.refreshCsrfToken?.();
             response = await send();
         } catch {
+            signal?.throwIfAborted();
             // Keep the original response so the caller reports the real problem.
         }
     }
@@ -162,7 +164,7 @@ export async function requestJson(url, body) {
         throw new Error(`SillyBunny refused the request (${response.status}).`);
     }
     const text = await response.text();
-    return text ? JSON.parse(text) : {};
+    return text && text.trim() !== 'OK' ? JSON.parse(text) : {};
 }
 
 function parseMaybeJson(value) {
@@ -192,8 +194,8 @@ function pairUp(payloads, names) {
  * endpoint. This is the only way to see what is actually saved on disk, which
  * is what publishing has to check against.
  */
-export async function readPresetCatalog() {
-    const data = await requestJson('/api/settings/get', {});
+export async function readPresetCatalog({ signal } = {}) {
+    const data = await requestJson('/api/settings/get', {}, { signal });
     return {
         openai: pairUp(data.openai_settings ?? [], data.openai_setting_names ?? []),
         textgenerationwebui: pairUp(data.textgenerationwebui_presets ?? [], data.textgenerationwebui_preset_names ?? []),
@@ -232,15 +234,27 @@ export function readInstalledPreset(apiId, name, source = getContext) {
     return structuredClone(payload);
 }
 
+function assertSafePresetName(name) {
+    // Match sanitize-filename's default rewrites so the catalog name and disk name cannot diverge.
+    if (typeof name !== 'string'
+        || !name
+        || /[/?<>\\:*|"\u0000-\u001f\u0080-\u009f]/.test(name)
+        || /^\.+$/.test(name)
+        || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\..*)?$/i.test(name)
+        || /[. ]$/.test(name)
+        || new TextEncoder().encode(name).length > 255) {
+        throw new Error('Choose a preset name that is safe as a filename (no control characters, / ? < > \\ : * | ", dot-only or Windows-reserved names, trailing dots or spaces, or more than 255 UTF-8 bytes).');
+    }
+}
+
 /**
- * Saves a draft to SillyBunny as a brand new preset.
- *
- * Nothing is overwritten: the name is checked against the files on disk first,
- * and the caller is expected to ask the user to reload afterwards, because
- * SillyBunny only reads its preset lists while starting up.
+ * Saves a draft after checking the current on-disk catalogue for its name.
+ * The host has no atomic create-only save, so another request can still race
+ * this check; the caller asks the user to reload after a successful save.
  */
-export async function publishPreset(apiId, name, payload) {
-    const catalog = await readPresetCatalog();
+export async function publishPreset(apiId, name, payload, { signal } = {}) {
+    assertSafePresetName(name);
+    const catalog = await readPresetCatalog({ signal });
     const taken = (catalog[apiId] ?? []).some(entry => entry.name.toLowerCase() === name.toLowerCase());
     if (taken) {
         throw new Error(`SillyBunny already has a ${apiId} preset called "${name}". Choose another name.`);
@@ -252,7 +266,7 @@ export async function publishPreset(apiId, name, payload) {
             { data: payload, presetName: name },
         );
     }
-    const result = await requestJson('/api/presets/save', { name, apiId, preset: payload });
+    const result = await requestJson('/api/presets/save', { name, apiId, preset: payload }, { signal });
     return String(result?.name || name);
 }
 

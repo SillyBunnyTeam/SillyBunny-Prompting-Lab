@@ -1,4 +1,8 @@
 import { ASSERTION, MAX_REGEX_LENGTH, SECTION_LABEL } from './constants.js';
+import { contentToText, messagesToText } from './message-content.js';
+import { regexSafetyProblem, testRegexSafely } from './safe-regex.js';
+
+const INEXACT_CAPTURE_MESSAGE = 'The observed dry-run prompt did not match its section metrics, so this check was left unchecked.';
 
 /**
  * Checks a finished run against the expectations saved with a test case.
@@ -22,14 +26,12 @@ function findSection(run, id) {
 
 /** The whole prompt as text, for checks that are not tied to one section. */
 export function finalText(run) {
-    if (typeof run?.capture?.combinedPrompt === 'string' && run.capture.combinedPrompt) {
-        return run.capture.combinedPrompt;
-    }
     const messages = run?.capture?.messages;
-    if (Array.isArray(messages)) {
-        return messages
-            .map(message => (typeof message?.content === 'string' ? message.content : ''))
-            .join('\n');
+    if (Array.isArray(messages) && messages.length) {
+        return messagesToText(messages);
+    }
+    if (typeof run?.capture?.combinedPrompt === 'string') {
+        return run.capture.combinedPrompt;
     }
     return '';
 }
@@ -39,7 +41,7 @@ function scopeText(run, scope) {
         return { text: finalText(run), missing: false };
     }
     const section = findSection(run, scope);
-    return { text: section?.content ?? '', missing: !section };
+    return { text: contentToText(section?.content), missing: !section };
 }
 
 function countOccurrences(haystack, needle) {
@@ -62,7 +64,7 @@ function allWorldInfoEntries(run) {
 const EVALUATORS = {
     [ASSERTION.SECTION_PRESENT](assertion, run) {
         const section = findSection(run, assertion.section);
-        const present = Boolean(section && section.content.trim());
+        const present = Boolean(section && contentToText(section.content).trim());
         return {
             pass: present,
             actual: present ? section.tokens : 0,
@@ -74,7 +76,7 @@ const EVALUATORS = {
 
     [ASSERTION.SECTION_ABSENT](assertion, run) {
         const section = findSection(run, assertion.section);
-        const present = Boolean(section && section.content.trim());
+        const present = Boolean(section && contentToText(section.content).trim());
         return {
             pass: !present,
             actual: present ? section.tokens : 0,
@@ -86,7 +88,7 @@ const EVALUATORS = {
 
     [ASSERTION.SECTION_UNIQUE](assertion, run) {
         const section = findSection(run, assertion.section);
-        const content = section?.content?.trim() ?? '';
+        const content = contentToText(section?.content).trim();
         if (!content) {
             return {
                 pass: null,
@@ -142,7 +144,17 @@ const EVALUATORS = {
                 message: `${where} is not in the prompt, so the text could not be looked for.`,
             };
         }
-        let found = false;
+        const finish = (found) => {
+            const pass = assertion.negate ? !found : found;
+            const expectation = assertion.negate ? 'should not appear' : 'should appear';
+            return {
+                pass,
+                actual: found,
+                message: pass
+                    ? `"${assertion.value}" ${assertion.negate ? 'does not appear' : 'appears'} in ${where}.`
+                    : `"${assertion.value}" ${expectation} in ${where}, but ${found ? 'it does' : 'it does not'}.`,
+            };
+        };
         if (assertion.mode === 'regex') {
             if (String(assertion.value ?? '').length > MAX_REGEX_LENGTH) {
                 return {
@@ -152,7 +164,7 @@ const EVALUATORS = {
                 };
             }
             try {
-                found = new RegExp(assertion.value).test(text);
+                new RegExp(assertion.value);
             } catch (error) {
                 return {
                     pass: null,
@@ -160,18 +172,35 @@ const EVALUATORS = {
                     message: `That search pattern is not valid: ${error?.message ?? error}`,
                 };
             }
-        } else {
-            found = text.includes(assertion.value);
+            const safetyProblem = regexSafetyProblem(assertion.value);
+            if (safetyProblem) {
+                return {
+                    pass: null,
+                    actual: null,
+                    message: safetyProblem,
+                };
+            }
+            return testRegexSafely(assertion.value, text).then((result) => {
+                if (result.status === 'timeout') {
+                    return {
+                        pass: null,
+                        actual: null,
+                        message: 'That search pattern took too long and was stopped, so this check was left unchecked.',
+                    };
+                }
+                if (result.status !== 'ok') {
+                    return {
+                        pass: null,
+                        actual: null,
+                        message: result.status === 'invalid'
+                            ? `That search pattern is not valid: ${result.error}`
+                            : 'That search pattern could not be run safely in this browser, so this check was left unchecked.',
+                    };
+                }
+                return finish(result.found);
+            });
         }
-        const pass = assertion.negate ? !found : found;
-        const expectation = assertion.negate ? 'should not appear' : 'should appear';
-        return {
-            pass,
-            actual: found,
-            message: pass
-                ? `"${assertion.value}" ${assertion.negate ? 'does not appear' : 'appears'} in ${where}.`
-                : `"${assertion.value}" ${expectation} in ${where}, but ${found ? 'it does' : 'it does not'}.`,
-        };
+        return finish(text.includes(assertion.value));
     },
 
     [ASSERTION.WI_ACTIVATED](assertion, run) {
@@ -180,11 +209,9 @@ const EVALUATORS = {
             // No scan ran at all. A scan that ran and activated nothing is
             // recorded as an empty pass and handled below as a real answer.
             return {
-                pass: assertion.negate ? true : null,
+                pass: null,
                 actual: 0,
-                message: assertion.negate
-                    ? 'No lorebook scan ran, so no entry could have been used.'
-                    : 'No lorebook scan ran during this run, so this could not be checked.',
+                message: 'No lorebook scan ran during this run, so this could not be checked.',
             };
         }
         const wanted = String(assertion.entryKey);
@@ -244,24 +271,43 @@ export function evaluateAssertion(assertion, run) {
             message: 'This check type is not supported by this version of Prompting Lab.',
         };
     }
+    const couldNotEvaluate = error => ({
+        pass: null,
+        actual: null,
+        message: `This check could not be made: ${error?.message ?? error}`,
+    });
     try {
-        return evaluator(assertion, run);
+        if (run?.capture?.metricsComplete === false) {
+            return {
+                pass: null,
+                actual: null,
+                message: INEXACT_CAPTURE_MESSAGE,
+            };
+        }
+        const result = evaluator(assertion, run);
+        return typeof result?.then === 'function' ? result.catch(couldNotEvaluate) : result;
     } catch (error) {
-        return {
-            pass: null,
-            actual: null,
-            message: `This check could not be made: ${error?.message ?? error}`,
-        };
+        return couldNotEvaluate(error);
     }
 }
 
 /** Evaluates every check on a test case and returns one result per check. */
-export function evaluateAssertions(assertions, run) {
-    return (assertions ?? []).map((assertion, index) => ({
+export async function evaluateAssertions(assertions, run) {
+    const results = await Promise.all((assertions ?? []).map(async (assertion, index) => ({
         index,
         type: assertion?.type ?? '',
-        ...evaluateAssertion(assertion, run),
-    }));
+        ...await evaluateAssertion(assertion, run),
+    })));
+    if (!results.length && run?.capture?.metricsComplete === false) {
+        results.push({
+            index: 0,
+            type: 'capture-exactness',
+            pass: null,
+            actual: null,
+            message: INEXACT_CAPTURE_MESSAGE,
+        });
+    }
+    return results;
 }
 
 /** True when at least one check definitely failed. */

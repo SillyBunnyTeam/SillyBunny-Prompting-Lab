@@ -1,6 +1,6 @@
-import { EMBED_KEY, EMBED_VERSION, MAX_REGEX_LENGTH } from './constants.js';
-import { ctxOf, getContext } from './host.js';
-import { migrateCase, newId, normalizeCase } from './schema.js';
+import { EMBED_KEY, EMBED_VERSION } from './constants.js';
+import { ctxOf, getContext, requestJson } from './host.js';
+import { migrateCase, newId, normalizeCase, validateAssertion } from './schema.js';
 
 /**
  * Stores test cases inside a character card, so they travel with the card when
@@ -43,20 +43,53 @@ export function readEmbeddedCases(hostRef, avatar) {
  * Writes test cases into a character card.
  * Pass an empty list to remove them.
  */
-export async function writeEmbeddedCases(hostRef, avatar, cases) {
+export async function writeEmbeddedCases(hostRef, avatar, cases, { signal } = {}) {
     const context = ctxOf(hostRef);
     const index = findCharacterIndexByAvatar(hostRef, avatar);
     if (index < 0) {
         throw new Error('That character is not installed, so the tests could not be saved into its card.');
     }
-    if (typeof context?.writeExtensionField !== 'function') {
-        throw new Error('This version of SillyBunny cannot save data into a character card.');
+    const character = context.characters[index];
+    const stored = character?.data?.extensions?.[EMBED_KEY];
+    if (stored && typeof stored === 'object' && Number(stored.v) > EMBED_VERSION) {
+        throw new Error('That character contains Prompting Lab data from a newer version and cannot be changed until the extension is updated.');
     }
     const payload = {
         v: EMBED_VERSION,
         cases: cases.map(item => stripForEmbedding(item)),
     };
-    await context.writeExtensionField(index, EMBED_KEY, payload);
+    await requestJson('/api/characters/merge-attributes', {
+        avatar,
+        data: { extensions: { [EMBED_KEY]: payload } },
+    }, { signal });
+    character.data ??= {};
+    character.data.extensions ??= {};
+    character.data.extensions[EMBED_KEY] = payload;
+    if (character.json_data) {
+        try {
+            const jsonData = JSON.parse(character.json_data);
+            if (jsonData && typeof jsonData === 'object' && !Array.isArray(jsonData)) {
+                jsonData.data = jsonData.data && typeof jsonData.data === 'object' && !Array.isArray(jsonData.data)
+                    ? jsonData.data
+                    : {};
+                jsonData.data.extensions = jsonData.data.extensions
+                    && typeof jsonData.data.extensions === 'object'
+                    && !Array.isArray(jsonData.data.extensions)
+                    ? jsonData.data.extensions
+                    : {};
+                jsonData.data.extensions[EMBED_KEY] = payload;
+                character.json_data = JSON.stringify(jsonData);
+                if (Number(index) === Number(context.characterId)) {
+                    const hidden = globalThis.document?.querySelector?.('#character_json_data');
+                    if (hidden) {
+                        hidden.value = character.json_data;
+                    }
+                }
+            }
+        } catch {
+            // The server has the update; preserve malformed host JSON as-is.
+        }
+    }
     return payload;
 }
 
@@ -94,18 +127,15 @@ export function stripForEmbedding(testCase) {
 /**
  * Prepares embedded cases for use in this installation: they are given fresh
  * identifiers and pinned to the character they came from. A card is written by
- * someone else, so checks that the file-import path would refuse — a search
- * pattern over the length limit — are dropped here the same way.
+ * someone else, so checks that the file-import path would refuse are dropped
+ * here the same way.
  */
 export function adoptEmbeddedCases(cases, avatar) {
     return cases.map(item => normalizeCase({
         ...item,
         id: newId(),
         assertions: (Array.isArray(item.assertions) ? item.assertions : [])
-            .filter(assertion => !(assertion?.type === 'content-match'
-                && assertion?.mode === 'regex'
-                && typeof assertion?.value === 'string'
-                && assertion.value.length > MAX_REGEX_LENGTH)),
+            .filter(assertion => validateAssertion(assertion).length === 0),
         pins: { ...item.pins, characterAvatar: avatar },
     }));
 }

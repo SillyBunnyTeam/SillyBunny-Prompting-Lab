@@ -4,6 +4,8 @@ import path from 'node:path';
 import process from 'node:process';
 import test from 'node:test';
 
+import { publishPreset, requestJson } from '../src/host.js';
+
 /**
  * Tripwire for SillyBunny upgrades. Prompting Lab reads a number of host
  * internals that upstream syncs can move or rename; this test fails loudly
@@ -11,6 +13,7 @@ import test from 'node:test';
  */
 
 const hostRoot = process.env.SILLYBUNNY_ROOT || '/home/platinum/SillyBunny';
+const requireHost = process.env.npm_lifecycle_event === 'test:host';
 
 async function available() {
     try {
@@ -25,13 +28,7 @@ function exportPattern(symbol) {
     return new RegExp(`export[^;\\n]*\\b${symbol}\\b|export\\s+(?:async\\s+)?(?:function|class|const|let)\\s+${symbol}\\b`);
 }
 
-/** Extracts one function's body by matching braces from its declaration. */
-function functionBody(source, name) {
-    const start = source.search(new RegExp(`function\\s+${name}\\s*\\(`));
-    if (start < 0) {
-        return '';
-    }
-    const open = source.indexOf('{', start);
+function bracedBlock(source, open) {
     if (open < 0) {
         return '';
     }
@@ -49,6 +46,18 @@ function functionBody(source, name) {
     return '';
 }
 
+/** Extracts one function's body by matching braces from its declaration. */
+function functionBody(source, name) {
+    const start = source.search(new RegExp(`function\\s+${name}\\s*\\(`));
+    return start < 0 ? '' : bracedBlock(source, source.indexOf('{', start));
+}
+
+function returnedObject(source, name) {
+    const body = functionBody(source, name);
+    const start = body.search(/\breturn\s*\{/);
+    return start < 0 ? '' : bracedBlock(body, body.indexOf('{', start));
+}
+
 /** Small stable hash, so a fingerprint can be written into this file. */
 function hash(text) {
     let value = 0x811c9dc5;
@@ -59,12 +68,114 @@ function hash(text) {
     return value.toString(16).padStart(8, '0');
 }
 
+test('preset publishing rejects names the host would sanitize before making a request', async () => {
+    const previousFetch = globalThis.fetch;
+    let requests = 0;
+    globalThis.fetch = async () => {
+        requests += 1;
+        return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+    };
+    try {
+        for (const name of [
+            '',
+            '.',
+            '..',
+            '...',
+            'bad/name',
+            'bad?name',
+            'bad<name',
+            'bad>name',
+            'bad\\name',
+            'bad:name',
+            'bad*name',
+            'bad|name',
+            'bad"name',
+            'bad\u0000name',
+            'bad\u0080name',
+            'CON',
+            'prn.json',
+            'COM0',
+            'lpt9.backup',
+            'trailing.',
+            'trailing ',
+            '\u00e9'.repeat(128),
+        ]) {
+            await assert.rejects(() => publishPreset('context', name, {}), /safe as a filename/);
+        }
+    } finally {
+        globalThis.fetch = previousFetch;
+    }
+    assert.equal(requests, 0, 'unsafe names must be rejected before the catalogue lookup');
+});
+
+test('preset publishing keeps the exact case-insensitive catalogue collision check', async () => {
+    const previousFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url) => {
+        requests.push(url);
+        return new Response(JSON.stringify({ context: [{ name: 'Release', marker: true }] }), {
+            headers: { 'Content-Type': 'application/json' },
+        });
+    };
+    try {
+        await assert.rejects(
+            () => publishPreset('context', 'release', {}),
+            /already has a context preset called "release"/,
+        );
+    } finally {
+        globalThis.fetch = previousFetch;
+    }
+    assert.deepEqual(requests, ['/api/settings/get']);
+});
+
+test('preset publishing forwards its signal to catalogue and save requests', async () => {
+    const previousFetch = globalThis.fetch;
+    const controller = new AbortController();
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+        requests.push({ url, signal: options.signal });
+        const data = url === '/api/settings/get' ? {} : { name: 'Release' };
+        return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
+    };
+    try {
+        assert.equal(
+            await publishPreset('context', 'Release', {}, { signal: controller.signal }),
+            'Release',
+        );
+    } finally {
+        globalThis.fetch = previousFetch;
+    }
+    assert.deepEqual(requests.map(request => request.url), ['/api/settings/get', '/api/presets/save']);
+    assert.ok(requests.every(request => request.signal === controller.signal));
+});
+
+test('the CSRF retry path does not swallow cancellation', async () => {
+    const previousFetch = globalThis.fetch;
+    const controller = new AbortController();
+    const reason = new Error('cancelled publish');
+    let requestSignal = null;
+    globalThis.fetch = async (_url, options) => {
+        requestSignal = options.signal;
+        controller.abort(reason);
+        return new Response('', { status: 403 });
+    };
+    try {
+        await assert.rejects(
+            () => requestJson('/api/presets/save', {}, { signal: controller.signal }),
+            error => error === reason,
+        );
+    } finally {
+        globalThis.fetch = previousFetch;
+    }
+    assert.equal(requestSignal, controller.signal);
+});
+
 test('SillyBunny exposes the host contracts used by Prompting Lab', {
-    skip: !(await available()) && !process.env.PROMPT_LAB_REQUIRE_HOST,
+    skip: !(await available()) && !requireHost,
 }, async () => {
     assert.equal(await available(), true, `SillyBunny checkout not found at ${hostRoot}`);
 
-    const [script, openai, tokenCounts, utils, context, events, lib, converters, shared, indexHtml, presetManager] = await Promise.all([
+    const [script, openai, tokenCounts, utils, context, events, lib, converters, shared, indexHtml, presetManager, charactersEndpoint] = await Promise.all([
         readFile(path.join(hostRoot, 'public/script.js'), 'utf8'),
         readFile(path.join(hostRoot, 'public/scripts/openai.js'), 'utf8'),
         readFile(path.join(hostRoot, 'public/scripts/prompt-token-counts.js'), 'utf8'),
@@ -76,6 +187,7 @@ test('SillyBunny exposes the host contracts used by Prompting Lab', {
         readFile(path.join(hostRoot, 'public/scripts/extensions/shared.js'), 'utf8'),
         readFile(path.join(hostRoot, 'public/index.html'), 'utf8'),
         readFile(path.join(hostRoot, 'public/scripts/preset-manager.js'), 'utf8'),
+        readFile(path.join(hostRoot, 'src/endpoints/characters.js'), 'utf8'),
     ]);
 
     await test('Generate still accepts a dry-run flag', () => {
@@ -87,6 +199,7 @@ test('SillyBunny exposes the host contracts used by Prompting Lab', {
     await test('prompt capture events exist and carry the dry-run flag', () => {
         for (const event of [
             'GENERATION_STARTED',
+            'GENERATION_AFTER_COMMANDS',
             'GENERATE_BEFORE_COMBINE_PROMPTS',
             'GENERATE_AFTER_COMBINE_PROMPTS',
             'GENERATE_AFTER_DATA',
@@ -101,12 +214,14 @@ test('SillyBunny exposes the host contracts used by Prompting Lab', {
             assert.match(events, new RegExp(`\\b${event}\\b`), `event ${event} is missing`);
         }
         assert.match(script, /event_types\.GENERATE_AFTER_DATA,\s*generate_data,\s*dryRun/);
+        assert.match(script, /event_types\.GENERATION_AFTER_COMMANDS,[^;]*dryRun/s);
         assert.match(script, /event_types\.GENERATE_AFTER_COMBINE_PROMPTS,\s*eventData/);
         assert.match(openai, /event_types\.CHAT_COMPLETION_PROMPT_READY,\s*eventData/);
     });
 
-    await test('the event emitter still supports ordering listeners last', async () => {
+    await test('the event emitter still supports ordering guard and capture listeners', async () => {
         const emitter = await readFile(path.join(hostRoot, 'public/lib/eventemitter.js'), 'utf8');
+        assert.match(emitter, /makeFirst/);
         assert.match(emitter, /makeLast/);
     });
 
@@ -122,15 +237,19 @@ test('SillyBunny exposes the host contracts used by Prompting Lab', {
     });
 
     await test('context exposes the functions the test runner drives', () => {
+        const contextObject = returnedObject(context, 'getContext');
+        assert.ok(contextObject, 'getContext returned object could not be found');
         for (const api of [
             'generate',
+            'activateSendButtons',
+            'deactivateSendButtons',
             'selectCharacterById',
             'unshallowCharacter',
             'getCharacterCardFields',
             'executeSlashCommandsWithOptions',
+            'SlashCommandParser',
             'ConnectionManagerRequestService',
             'promptManager',
-            'writeExtensionField',
             'getTokenCountAsync',
             'extensionSettings',
             'saveSettingsDebounced',
@@ -141,8 +260,23 @@ test('SillyBunny exposes the host contracts used by Prompting Lab', {
             'openGroupChat',
             'closeCurrentChat',
         ]) {
-            assert.match(context, new RegExp(`\\b${api}\\b`), `context.${api} is missing`);
+            assert.match(contextObject, new RegExp(`(?:^|[,{])\\s*${api}\\s*(?=[:,])`), `context.${api} is missing`);
         }
+    });
+
+    await test('character cards accept the checked merge endpoint shape', () => {
+        const route = charactersEndpoint.match(/router\.post\('\/merge-attributes'[\s\S]*?(?=\nrouter\.post\()/)?.[0] ?? '';
+        assert.ok(route, 'character merge-attributes route is missing');
+        assert.match(route, /const update = request\.body/);
+        assert.match(route, /update\.avatar/);
+        assert.match(route, /mergeCharacterUpdate\(avatarPath, update\.avatar, update, request\)/);
+        assert.match(route, /result\.ok[\s\S]*response\.sendStatus\(200\)/);
+
+        // Prompting Lab sends { avatar, data: { extensions: ... } }. The route
+        // must remove only the locator and merge the remaining data object.
+        const merge = functionBody(charactersEndpoint, 'mergeCharacterUpdate');
+        assert.match(merge, /_\.unset\(update, 'avatar'\)/);
+        assert.match(merge, /deepMerge\(character, update\)/);
     });
 
     await test('utils and bundled libraries provide the helpers used here', () => {
@@ -209,12 +343,15 @@ test('SillyBunny exposes the host contracts used by Prompting Lab', {
             readFile(path.join(hostRoot, 'src/endpoints/settings.js'), 'utf8'),
         ]);
 
-        // Publishing a draft posts to this route with these three fields.
-        assert.match(presetEndpoint, /router\.post\('\/save'/);
-        assert.match(presetEndpoint, /sanitize\(request\.body\.name\)/);
-        assert.match(presetEndpoint, /request\.body\.preset/);
-        assert.match(presetEndpoint, /request\.body\.apiId/);
-        assert.match(presetEndpoint, /response\.send\(\{\s*name\s*\}\)/);
+        // The host sanitizes names and overwrites by default. The Lab can only
+        // validate and check the catalogue before this non-atomic save.
+        const saveRoute = presetEndpoint.match(/router\.post\('\/save'[\s\S]*?(?=\nrouter\.post\('\/delete')/)?.[0] ?? '';
+        assert.ok(saveRoute, 'preset save route is missing');
+        assert.match(saveRoute, /sanitize\(request\.body\.name\)/);
+        assert.match(saveRoute, /request\.body\.apiId/);
+        assert.match(saveRoute, /tryWriteFileSync\(\s*fullpath,\s*JSON\.stringify\(\s*request\.body\.preset,\s*null,\s*4\s*\)\s*\)/);
+        assert.doesNotMatch(saveRoute, /expectedFileAbsent\s*:\s*true|existsSync\(\s*fullpath\s*\)|['"]wx['"]/, 'preset saves gained create-only support; revisit publishPreset and this contract');
+        assert.match(saveRoute, /response\.send\(\{\s*name\s*\}\)/);
 
         // The workshop reads the installed catalogue from this route, so the
         // six lists it splits apart have to keep their names and shapes.

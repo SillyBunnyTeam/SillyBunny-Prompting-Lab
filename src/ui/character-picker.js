@@ -68,6 +68,7 @@ export function createCharacterPicker({
     pickerCount += 1;
     const id = `sbpl-picker-${pickerCount}`;
     let items = [];
+    let duplicateNames = new Set();
 
     const labelNode = element('span', { className: 'sbpl-field-label', text: label, id: `${id}-label` });
     const details = element('details', { className: 'sbpl-picker' });
@@ -105,7 +106,11 @@ export function createCharacterPicker({
         }
         const found = items.find(item => item.value === value);
         return found
-            ? { value: found.value, name: found.name, meta: '' }
+            ? {
+                value: found.value,
+                name: found.name,
+                meta: duplicateNames.has(found.name.toLocaleLowerCase()) ? found.value : '',
+            }
             : { value: '', name: value, meta: missingText };
     }
 
@@ -152,15 +157,18 @@ export function createCharacterPicker({
             ? [{ value: '', name: blankLabel, meta: '' }, ...items]
             : [...items];
         list.replaceChildren(...choices.map((choice) => {
+            const meta = choice.value && duplicateNames.has(choice.name.toLocaleLowerCase())
+                ? choice.value
+                : choice.meta;
             const option = element('button', {
                 className: 'sbpl-picker-option',
-                attributes: { type: 'button', 'aria-label': choice.name },
+                attributes: { type: 'button', 'aria-label': [choice.name, meta].filter(Boolean).join(', ') },
             });
             option.dataset.value = choice.value;
             option.dataset.search = `${choice.name} ${choice.value}`.toLocaleLowerCase();
             option.append(
                 avatarThumbnail(choice.value, choice.name, 'sbpl-picker-avatar', thumbnailType),
-                choiceCopy(choice),
+                choiceCopy({ ...choice, meta }),
             );
 
             const commit = () => choose(choice.value);
@@ -259,6 +267,12 @@ export function createCharacterPicker({
             items = (next ?? [])
                 .filter(item => item?.value)
                 .map(item => ({ value: item.value, name: item.name || item.value, meta: '' }));
+            const nameCounts = new Map();
+            for (const item of items) {
+                const name = item.name.toLocaleLowerCase();
+                nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+            }
+            duplicateNames = new Set([...nameCounts].filter(([, count]) => count > 1).map(([name]) => name));
             renderOptions();
         },
         setValue(value) {

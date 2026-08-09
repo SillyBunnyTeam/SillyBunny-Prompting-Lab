@@ -1,6 +1,12 @@
 import { getContext, loadHost } from './src/host.js';
 import { clearSettings, getSettings, isOwnSettingsEcho } from './src/settings.js';
 import { clearAll } from './src/storage.js';
+import {
+    abortActiveOperations,
+    closeOperationRegistry,
+    openOperationRegistry,
+    waitForQuiescence,
+} from './src/operations.js';
 import { mountRuntimeUi, unmountRuntimeUi } from './src/ui/runtime.js';
 
 let initialized = false;
@@ -32,6 +38,7 @@ async function mountOnReady(epoch, signal) {
 }
 
 export function init() {
+    openOperationRegistry();
     if (initialized) {
         runtimeUi?.refresh('init');
         return;
@@ -48,6 +55,7 @@ export function init() {
     const events = context?.eventTypes;
     if (!source || !events) {
         initialized = false;
+        closeOperationRegistry();
         activationController.abort();
         activationController = null;
         return;
@@ -79,6 +87,8 @@ export function init() {
 }
 
 export function deactivate() {
+    closeOperationRegistry();
+    abortActiveOperations();
     initialized = false;
     activationEpoch++;
     activationController?.abort();
@@ -95,10 +105,7 @@ export function deactivate() {
 
 export async function clean() {
     deactivate();
-    try {
-        await clearAll();
-    } catch (error) {
-        console.error('Prompting Lab could not clear its stored tests.', error);
-    }
+    await waitForQuiescence();
+    await clearAll();
     clearSettings();
 }

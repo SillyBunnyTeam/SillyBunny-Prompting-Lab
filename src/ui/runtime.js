@@ -1,4 +1,4 @@
-import { EXTENSION_LABEL, EXTENSION_NAME, TAB } from '../constants.js';
+import { EXTENSION_LABEL, EXTENSION_NAME, TAB, TAB_LABEL, TAB_META } from '../constants.js';
 import { button, element, replace } from '../dom.js';
 import { createAbTab } from './ab-tab.js';
 import { createCasesTab } from './cases-tab.js';
@@ -10,6 +10,20 @@ import { createRunTab } from './run-tab.js';
 import { createScenesTab } from './scenes-tab.js';
 import { createSettingsTab } from './settings-tab.js';
 import { createWorkbench } from './workbench.js';
+
+const TOKEN_SPEND_TAB_LABELS = Object.entries(TAB_META)
+    .filter(([, meta]) => meta.sends)
+    .map(([id]) => TAB_LABEL[id]);
+const TOKEN_SPEND_TAB_NAMES = new Intl.ListFormat('en', { type: 'conjunction' })
+    .format(TOKEN_SPEND_TAB_LABELS);
+const TOKEN_SPEND_SUMMARY = `${TOKEN_SPEND_TAB_NAMES} ${TOKEN_SPEND_TAB_LABELS.length === 1 ? 'is' : 'are'}`
+    + ` the only ${TOKEN_SPEND_TAB_LABELS.length === 1 ? 'tab' : 'tabs'} that send requests and use tokens,`
+    + ` and only when you press ${TOKEN_SPEND_TAB_LABELS.length === 1 ? 'its button' : 'their buttons'}.`;
+const TABBABLE_SELECTOR = [
+    'a[href]', 'area[href]', 'button', 'input', 'select', 'textarea',
+    'iframe', 'object', 'embed', 'summary', 'audio[controls]', 'video[controls]',
+    '[contenteditable]:not([contenteditable="false"])', '[tabindex]',
+].join(', ');
 
 let mounted = null;
 
@@ -37,6 +51,8 @@ export function mountRuntimeUi({ signal = null } = {}) {
     let pageMount = null;
     let pageStatus = null;
     let pageOpener = null;
+    let modalObserver = null;
+    const modalBackground = new Map();
     let disposed = false;
     let workbench = null;
 
@@ -78,9 +94,9 @@ export function mountRuntimeUi({ signal = null } = {}) {
         replace(
             pageStatus,
             host,
-            pill('Tests spend no tokens', {
+            pill(`Only ${TOKEN_SPEND_TAB_LABELS.length} tabs use tokens`, {
                 variant: 'sbpl-pill-quiet',
-                title: 'Only Compare prompts and Compare models send a request, and only when you press their button.',
+                title: TOKEN_SPEND_SUMMARY,
             }),
         );
     }
@@ -129,8 +145,14 @@ export function mountRuntimeUi({ signal = null } = {}) {
             workbench.refreshReadout();
         },
         onQuickRun: (testCase) => {
+            if (workbench.getState().availability?.ok === false) {
+                return;
+            }
+            const suiteId = testCase.suiteId ?? document.querySelector(
+                '#sbpl-panel .sbpl-cases-tab > .sbpl-controls select',
+            )?.value ?? '';
             workbench.showTab(TAB.RUN);
-            runTab.runOne(testCase);
+            runTab.runOne(testCase, suiteId);
         },
     });
     const promptsTab = createPromptsTab({
@@ -180,10 +202,108 @@ export function mountRuntimeUi({ signal = null } = {}) {
 
     /* ---------------------------------------------------- full-page mode */
 
+    function pageTabbables() {
+        if (!page || page.hidden) {
+            return [];
+        }
+        return [...page.querySelectorAll(TABBABLE_SELECTOR)].filter(node => (
+            node.tabIndex >= 0
+            && !node.matches(':disabled')
+            && !node.closest('[inert]')
+            && node.getClientRects().length > 0
+            && getComputedStyle(node).visibility !== 'hidden'
+        )).sort((left, right) => {
+            if (left.tabIndex === right.tabIndex) {
+                return 0;
+            }
+            if (left.tabIndex === 0) {
+                return 1;
+            }
+            if (right.tabIndex === 0) {
+                return -1;
+            }
+            return left.tabIndex - right.tabIndex;
+        });
+    }
+
+    function hasActiveHostUi(sibling) {
+        for (const selector of [':modal', ':popover-open']) {
+            try {
+                if (sibling.matches(selector) || sibling.querySelector(selector)) {
+                    return true;
+                }
+            } catch {
+                // Older hosts may run a browser without one of these selectors.
+            }
+        }
+        const dialog = sibling.matches('dialog[open], [role="dialog"], [role="alertdialog"]')
+            ? sibling
+            : sibling.querySelector('dialog[open], [role="dialog"], [role="alertdialog"]');
+        return Boolean(dialog && !dialog.hidden && dialog.getAttribute('aria-hidden') !== 'true'
+            && dialog.getClientRects().length);
+    }
+
+    function nestedHostUiOpen() {
+        return [...document.body.children].some(sibling => sibling !== page && hasActiveHostUi(sibling));
+    }
+
+    function containPageFocus(event) {
+        if (!page || page.hidden || page.contains(event.target) || nestedHostUiOpen()) {
+            return;
+        }
+        const restore = () => (pageTabbables()[0] ?? page).focus({ preventScroll: true });
+        restore();
+        requestAnimationFrame(() => {
+            if (page && !page.hidden && !nestedHostUiOpen() && !page.contains(document.activeElement)) {
+                restore();
+            }
+        });
+    }
+
+    function inertPageBackground() {
+        for (const sibling of document.body.children) {
+            if (sibling === page) {
+                continue;
+            }
+            if (!modalBackground.has(sibling)) {
+                modalBackground.set(sibling, sibling.hasAttribute('inert'));
+            }
+            sibling.toggleAttribute('inert', hasActiveHostUi(sibling)
+                ? modalBackground.get(sibling)
+                : true);
+        }
+    }
+
+    function activatePageModal() {
+        inertPageBackground();
+        document.addEventListener('focusin', containPageFocus, true);
+        document.addEventListener('toggle', inertPageBackground, true);
+        modalObserver?.disconnect();
+        modalObserver = new MutationObserver(inertPageBackground);
+        modalObserver.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['open', 'role', 'aria-modal', 'aria-hidden', 'hidden', 'popover', 'class', 'style'],
+        });
+    }
+
+    function deactivatePageModal() {
+        modalObserver?.disconnect();
+        modalObserver = null;
+        document.removeEventListener('focusin', containPageFocus, true);
+        document.removeEventListener('toggle', inertPageBackground, true);
+        for (const [sibling, wasInert] of modalBackground) {
+            sibling.toggleAttribute('inert', wasInert);
+        }
+        modalBackground.clear();
+    }
+
     function ensurePage() {
         if (page?.isConnected) {
             return;
         }
+        deactivatePageModal();
         page?.remove();
         document.getElementById('sbpl-page')?.remove();
         page = element('div', {
@@ -193,6 +313,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
                 role: 'dialog',
                 'aria-modal': 'true',
                 'aria-label': `${EXTENSION_LABEL} workspace`,
+                tabindex: '-1',
             },
         });
         page.hidden = true;
@@ -242,19 +363,20 @@ export function mountRuntimeUi({ signal = null } = {}) {
             }
             // aria-modal promises the app behind the page is unreachable, so
             // Tab has to wrap inside the page instead of escaping it.
-            if (event.key === 'Tab') {
-                const focusable = [...page.querySelectorAll(
-                    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-                )].filter(node => !node.disabled && node.getClientRects().length > 0);
+            if (event.key === 'Tab' && !nestedHostUiOpen()) {
+                const focusable = pageTabbables();
                 if (!focusable.length) {
+                    event.preventDefault();
+                    page.focus({ preventScroll: true });
                     return;
                 }
                 const first = focusable[0];
                 const last = focusable[focusable.length - 1];
-                if (event.shiftKey && document.activeElement === first) {
+                const index = focusable.indexOf(document.activeElement);
+                if (event.shiftKey && index <= 0) {
                     event.preventDefault();
                     last.focus();
-                } else if (!event.shiftKey && document.activeElement === last) {
+                } else if (!event.shiftKey && (index < 0 || index === focusable.length - 1)) {
                     event.preventDefault();
                     first.focus();
                 }
@@ -272,6 +394,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
         pageOpener = opener instanceof HTMLElement ? opener : null;
         page.hidden = false;
         workbench.mount(pageMount, { layout: 'page' });
+        activatePageModal();
         updatePageStatus();
         requestAnimationFrame(() => {
             if (!disposed && page && !page.hidden) {
@@ -286,11 +409,15 @@ export function mountRuntimeUi({ signal = null } = {}) {
             return;
         }
         page.hidden = true;
+        deactivatePageModal();
         ensureSettingsDrawer();
         if (workbenchMount) {
             workbench.mount(workbenchMount, { layout: 'drawer' });
         }
-        pageOpener?.focus?.();
+        const opener = pageOpener?.isConnected
+            ? pageOpener
+            : (document.getElementById(pageOpener?.id) ?? document.getElementById('sbpl-menu-item'));
+        opener?.focus?.({ preventScroll: true });
         pageOpener = null;
     }
 
@@ -312,6 +439,8 @@ export function mountRuntimeUi({ signal = null } = {}) {
             className: 'list-group-item flex-container flexGap5 interactable sbpl-menu-item',
             attributes: {
                 title: 'Open the Prompting Lab workspace to test prompts for your characters',
+                role: 'button',
+                tabindex: '0',
             },
         });
         menuItem.append(
@@ -322,6 +451,12 @@ export function mountRuntimeUi({ signal = null } = {}) {
             element('span', { text: EXTENSION_LABEL }),
         );
         menuItem.addEventListener('click', () => openPage(menuItem));
+        menuItem.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                openPage(menuItem);
+            }
+        });
         host.append(menuItem);
     }
 
@@ -333,6 +468,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
         if (!host) {
             return;
         }
+        const drawerWasExpanded = Boolean(drawerIcon && !drawerIcon.classList.contains('down'));
         drawerObserver?.disconnect();
         settingsRoot?.remove();
         const staleDrawer = document.getElementById('sbpl-settings');
@@ -351,7 +487,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
             attributes: {
                 type: 'button',
                 'aria-controls': 'sbpl-settings-content',
-                'aria-expanded': 'false',
+                'aria-expanded': String(drawerWasExpanded),
             },
         });
         const summaryCopy = element('span', { className: 'sbpl-settings-summary-copy' });
@@ -363,7 +499,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
             }),
         );
         drawerIcon = element('span', {
-            className: 'inline-drawer-icon fa-solid fa-circle-chevron-down down not_focusable',
+            className: `inline-drawer-icon fa-solid fa-circle-chevron-down ${drawerWasExpanded ? 'up' : 'down'} not_focusable`,
             attributes: { 'aria-hidden': 'true' },
         });
         drawerToggle.append(summaryCopy, drawerIcon);
@@ -371,9 +507,9 @@ export function mountRuntimeUi({ signal = null } = {}) {
         drawerContent = element('div', {
             id: 'sbpl-settings-content',
             className: 'inline-drawer-content sbpl-settings-content',
-            attributes: { 'aria-hidden': 'true' },
+            attributes: { 'aria-hidden': String(!drawerWasExpanded) },
         });
-        drawerContent.style.display = 'none';
+        drawerContent.style.display = drawerWasExpanded ? 'block' : 'none';
 
         const settingsBody = element('div', { className: 'sbpl-settings-body' });
         drawerStatus = element('p', {
@@ -390,7 +526,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
             drawerStatus,
             element('p', {
                 className: 'sbpl-settings-note',
-                text: 'Prompt tests build prompts without sending a message or using tokens. Compare prompts and Compare models are the only tabs that send a prompt and use tokens.',
+                text: `Prompt tests build prompts without sending a message or using tokens. ${TOKEN_SPEND_SUMMARY}`,
             }),
             element('p', {
                 className: 'sbpl-settings-note',
@@ -443,6 +579,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
                 return;
             }
             disposed = true;
+            deactivatePageModal();
             drawerObserver?.disconnect();
             workbench.dispose();
             menuItem?.remove();

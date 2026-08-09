@@ -24,30 +24,39 @@ test.after(() => removeStubContext());
 /** Records what each column was asked to build and send. */
 function makeHarness({ reply = (preset, turn) => `${preset} reply ${turn}`, capture = null } = {}) {
     const applied = [];
+    const applyOptions = [];
     const built = [];
+    const captureOptions = [];
     const sent = [];
+    const snapshot = { token: 'snapshot' };
     let restored = 0;
 
     return {
         applied,
+        applyOptions,
         built,
+        captureOptions,
         sent,
+        snapshot,
         get restored() {
             return restored;
         },
         options: {
-            snapshotFn: () => ({ token: 'snapshot' }),
-            restoreFn: (context, snapshot) => {
-                assert.deepEqual(snapshot, { token: 'snapshot' }, 'restore must be handed the snapshot');
+            snapshotFn: () => snapshot,
+            restoreFn: (context, restoredSnapshot) => {
+                assert.equal(restoredSnapshot, snapshot, 'restore must be handed the snapshot');
                 restored += 1;
                 return [];
             },
-            applyFn: async (context, pins) => {
+            applyFn: async (context, pins, options) => {
                 applied.push(pins);
+                applyOptions.push(options);
                 return { caveats: [] };
             },
-            captureFn: async ({ scene }) => {
+            captureFn: async (options) => {
+                const { scene } = options;
                 built.push(scene.map(entry => `${entry.role}:${entry.text}`));
+                captureOptions.push(options);
                 return capture ?? {
                     messages: [{ role: 'user', content: scene[scene.length - 1].text }],
                     tokenTable: { total: 100 + scene.length },
@@ -73,10 +82,10 @@ const BASE = {
 
 /* ------------------------------------------------------------- the script */
 
-test('scripted turns are sent as written, trimmed and capped', () => {
+test('scripted turns keep their exact text, skip blanks, and are capped', () => {
     assert.deepEqual(
         sceneTurns({ mode: SCENE_MODE.SCRIPTED, turns: ['  one  ', '', 'two', 'three', 'four', 'five'] }),
-        ['one', 'two', 'three', 'four'],
+        ['  one  ', 'two', 'three', 'four'],
     );
 });
 
@@ -121,7 +130,89 @@ test('every preset faces the same scripted turns, each built on the scene so far
     assert.deepEqual(result.columns.map(column => column.label), ['Preset 1', 'Preset 2']);
     assert.deepEqual(result.columns[0].caveats, ['no-interceptors']);
     assert.equal(result.columns[0].turns[0].promptTokens, 101);
-    assert.equal(harness.restored, 1, 'settings are put back once, at the end');
+    assert.equal(harness.restored, 2, 'settings are put back between columns and at the end');
+});
+
+test('every apply receives the initial state and every capture receives the abort signal', async () => {
+    const harness = makeHarness();
+    const controller = new AbortController();
+    await runSceneComparison({ ...BASE, ...harness.options, signal: controller.signal });
+
+    assert.ok(harness.applyOptions.every(options => options.originalState === harness.snapshot));
+    assert.ok(harness.applyOptions.every(options => options.signal === controller.signal));
+    assert.ok(harness.captureOptions.every(options => options.signal === controller.signal));
+});
+
+test('each column starts from the initial host state', async () => {
+    const state = { preset: 'original' };
+    const starts = [];
+    const sent = [];
+    let restores = 0;
+
+    const result = await runSceneComparison({
+        ...BASE,
+        turns: ['One turn.'],
+        snapshotFn: () => ({ ...state }),
+        restoreFn: (_context, snapshot) => {
+            restores += 1;
+            state.preset = snapshot.preset;
+            return [];
+        },
+        applyFn: async (_context, pins) => {
+            starts.push(state.preset);
+            state.preset = pins.presets[0].name;
+        },
+        captureFn: async () => ({ messages: [] }),
+        sendFn: async () => {
+            sent.push(state.preset);
+            return { text: 'reply' };
+        },
+    });
+
+    assert.deepEqual(starts, ['original', 'original']);
+    assert.deepEqual(sent, ['Preset 1', 'Preset 2']);
+    assert.equal(restores, 2);
+    assert.equal(state.preset, 'original');
+    assert.equal(result.incomplete, false);
+});
+
+test('an inter-column restore failure prevents the next send and stays reported', async () => {
+    const harness = makeHarness();
+    let restoreCalls = 0;
+    const result = await runSceneComparison({
+        ...BASE,
+        ...harness.options,
+        turns: ['One turn.'],
+        restoreFn: () => {
+            restoreCalls += 1;
+            return restoreCalls === 1 ? ['preset: original state unavailable'] : [];
+        },
+    });
+
+    assert.deepEqual(harness.applied.map(pins => pins.presets[0].name), ['Preset 1']);
+    assert.equal(harness.sent.length, 1);
+    assert.equal(restoreCalls, 2, 'the final restore still runs');
+    assert.deepEqual(result.restoreProblems, ['preset: original state unavailable']);
+    assert.equal(result.completedRequests, 1);
+    assert.equal(result.expectedRequests, 2);
+    assert.equal(result.incomplete, true);
+    assert.equal(result.aborted, false);
+});
+
+test('blank turns do not trim text or renumber later turns', async () => {
+    const harness = makeHarness();
+    const result = await runSceneComparison({
+        ...BASE,
+        ...harness.options,
+        presets: [{ apiId: 'openai', name: 'Preset 1' }],
+        turns: ['  first line  ', ' \n ', 'third line\n'],
+    });
+    assert.deepEqual(harness.built, [
+        ['user:  first line  '],
+        ['user:  first line  ', 'assistant:P1 reply 1', 'user:third line\n'],
+    ]);
+    assert.deepEqual(result.columns[0].turns.map(turn => turn.index), [1, 3]);
+    assert.deepEqual(result.columns[0].turns.map(turn => turn.userText), ['  first line  ', 'third line\n']);
 });
 
 test('a failed reply ends that column instead of answering a reply that never came', async () => {
@@ -134,7 +225,7 @@ test('a failed reply ends that column instead of answering a reply that never ca
 
     assert.deepEqual(result.columns.map(column => column.turns.length), [1, 1]);
     assert.equal(result.columns[0].turns[0].error, 'The model returned an empty reply.');
-    assert.equal(harness.restored, 1);
+    assert.equal(harness.restored, 2);
 });
 
 test('a preset that cannot be applied is reported without stopping the others', async () => {
@@ -153,7 +244,7 @@ test('a preset that cannot be applied is reported without stopping the others', 
     assert.equal(result.columns[0].error, 'That preset is not installed any more.');
     assert.deepEqual(result.columns[0].turns, []);
     assert.equal(result.columns[1].turns.length, 2, 'the second preset still played the scene');
-    assert.equal(harness.restored, 1);
+    assert.equal(harness.restored, 2);
 });
 
 test('settings are put back even when building the prompt throws', async () => {
@@ -167,7 +258,7 @@ test('settings are put back even when building the prompt throws', async () => {
     });
 
     assert.equal(result.columns[0].error, 'SillyBunny did not return a prompt.');
-    assert.equal(harness.restored, 1);
+    assert.equal(harness.restored, 2);
     assert.deepEqual(harness.sent, [], 'nothing is sent, so nothing is paid for');
 });
 
@@ -188,6 +279,26 @@ test('stopping leaves the presets that had not started alone', async () => {
     assert.equal(result.columns.length, 1, 'the second preset was never applied');
     assert.equal(result.columns[0].turns.length, 1);
     assert.equal(harness.restored, 1);
+});
+
+test('an abort during capture is checked before the paid send', async () => {
+    const harness = makeHarness();
+    const controller = new AbortController();
+    const result = await runSceneComparison({
+        ...BASE,
+        ...harness.options,
+        signal: controller.signal,
+        captureFn: async ({ scene }) => {
+            controller.abort();
+            return {
+                messages: [{ role: 'user', content: scene.at(-1).text }],
+                tokenTable: { total: 10 },
+            };
+        },
+    });
+    assert.equal(result.aborted, true);
+    assert.equal(result.completedRequests, 0);
+    assert.deepEqual(harness.sent, []);
 });
 
 test('nothing is applied or sent when there is no scene to play', async () => {
@@ -252,12 +363,71 @@ test('nothing is streamed when nobody is watching', async () => {
     assert.equal(asked, null);
 });
 
+test('a failed streamed turn keeps its partial text and its error', async () => {
+    const harness = makeHarness();
+    const result = await runSceneComparison({
+        ...BASE,
+        ...harness.options,
+        presets: [{ apiId: 'openai', name: 'Preset 1' }],
+        turns: ['One turn.'],
+        live: true,
+        sendFn: async (profileId, prompt, { onDelta }) => {
+            onDelta('Partial reply');
+            return { profileId, text: '', error: 'stream disconnected' };
+        },
+    });
+    assert.equal(result.columns[0].turns[0].text, 'Partial reply');
+    assert.equal(result.columns[0].turns[0].error, 'stream disconnected');
+    const saved = formatScene(result, { format: 'md' });
+    assert.match(saved, /Partial reply/);
+    assert.match(saved, /stream disconnected/);
+});
+
+test('a whitespace-only scene reply is treated as empty but preserved', async () => {
+    const harness = makeHarness();
+    const result = await runSceneComparison({
+        ...BASE,
+        ...harness.options,
+        presets: [{ apiId: 'openai', name: 'Preset 1' }],
+        sendFn: async profileId => ({ profileId, text: ' \n ', error: null }),
+    });
+    const turn = result.columns[0].turns[0];
+    assert.equal(turn.text, ' \n ');
+    assert.match(turn.error, /empty reply/);
+    assert.equal(result.columns[0].turns.length, 1);
+});
+
+test('scene sends use the tested sampler preset and only suppress tested instruct settings', async () => {
+    const harness = makeHarness();
+    const flags = [];
+    await runSceneComparison({
+        ...BASE,
+        ...harness.options,
+        presets: [
+            { apiId: 'openai', name: 'Chat preset' },
+            { apiId: 'textgenerationwebui', name: 'Sampler' },
+            { apiId: 'instruct', name: 'Instruct' },
+        ],
+        turns: ['One turn.'],
+        sendFn: async (profileId, prompt, options) => {
+            flags.push([options.presetName, options.includePreset, options.includeInstruct]);
+            return { profileId, text: 'reply', error: null };
+        },
+    });
+    assert.deepEqual(flags, [
+        ['Chat preset', true, true],
+        ['Sampler', true, true],
+        [undefined, true, false],
+    ]);
+});
+
 test('durations are read in the units a person thinks in', () => {
     assert.equal(describeDuration(0), '0.0 seconds');
     assert.equal(describeDuration(8400), '8.4 seconds');
     assert.equal(describeDuration(42000), '42 seconds');
     assert.equal(describeDuration(72000), '1 minute 12 seconds');
     assert.equal(describeDuration(605000), '10 minutes 5 seconds');
+    assert.equal(describeDuration(119600), '2 minutes 0 seconds');
 });
 
 /* ------------------------------------------------------------- exporting */
@@ -313,6 +483,24 @@ test('the plain text version carries the same facts without the markup', () => {
     assert.match(text, /\(8\.4 seconds, prompt 3,120 tokens\)/);
 });
 
+test('every export records completeness and each caveat once', () => {
+    const result = {
+        ...FINISHED,
+        aborted: true,
+        incomplete: true,
+        expectedRequests: 4,
+        completedRequests: 1,
+        columns: FINISHED.columns.map(column => ({ ...column, caveats: ['existing-chat'] })),
+    };
+    for (const format of ['md', 'txt', 'html']) {
+        const output = formatScene(result, { format });
+        assert.match(output, /Aborted \(incomplete\)/);
+        assert.match(output, /1 of 4 completed/);
+        assert.equal((output.match(/This character already had a chat open/g) ?? []).length, 1);
+    }
+    assert.match(formatScene({ ...result, aborted: false }, { format: 'md' }), /Status:\*\* Incomplete/);
+});
+
 test('the file name says what the file holds and stays safe', () => {
     assert.equal(
         sceneFileName({ characterName: 'Aqua / Goddess!', format: 'md', savedAt: '2026-08-09T12:00:00.000Z' }),
@@ -339,11 +527,11 @@ const WITH_MARKUP = {
     }],
 };
 
-test('a saved web page keeps the markup a reply carried', () => {
+test('the non-DOM web export shows reply markup as escaped plain text', () => {
     const page = formatScene(WITH_MARKUP, { format: 'html', characterName: 'Aqua' });
 
     assert.match(page, /^<!DOCTYPE html>/);
-    assert.match(page, /<div class="tracker" style="color:red">Mood: <b>wary<\/b><\/div>/);
+    assert.match(page, /&lt;div class=&quot;tracker&quot; style=&quot;color:red&quot;&gt;Mood: &lt;b&gt;wary&lt;\/b&gt;&lt;\/div&gt;/);
     // What the user typed is text, so its angle brackets stay visible rather
     // than becoming an element in the saved page.
     assert.match(page, /Show me the &lt;tracker&gt; &amp; stats/);
@@ -359,10 +547,12 @@ test('a saved web page cannot run what a model wrote', () => {
             turns: [{
                 index: 1,
                 userText: 'go',
-                text: '<script>fetch("http://example.test")</script>'
+                text: '</div></section><form action="https://example.test">'
+                    + '<script>fetch("http://example.test")</script>'
                     + '<img src=x onerror="alert(1)">'
                     + '<a href="javascript:alert(2)">tap</a>'
-                    + '<iframe src="http://example.test"></iframe>',
+                    + '<button formaction="https://example.test">go</button>'
+                    + '<style>body{display:none}</style></form>',
                 error: null,
                 promptTokens: 10,
                 durationMs: 1000,
@@ -371,16 +561,20 @@ test('a saved web page cannot run what a model wrote', () => {
     }, { format: 'html' });
 
     assert.doesNotMatch(page, /<script>/i);
-    assert.doesNotMatch(page, /<iframe/i);
-    assert.doesNotMatch(page, /onerror/i);
-    assert.doesNotMatch(page, /javascript:/i);
+    assert.doesNotMatch(page, /<form\b/i);
+    assert.doesNotMatch(page, /<button\b/i);
+    assert.equal((page.match(/<style>/gi) ?? []).length, 1, 'only the export page stylesheet remains');
     // Belt and braces: even markup that got past the strip cannot run or fetch.
     assert.match(page, /Content-Security-Policy" content="default-src 'none'/);
+    assert.match(page, /form-action 'none'; base-uri 'none'/);
 });
 
-test('the stripper leaves ordinary markup alone', () => {
+test('the non-DOM sanitizer conservatively escapes ordinary markup', () => {
     const kept = '<div class="card"><style>.card{color:red}</style><b>Mood</b>: wary</div>';
-    assert.equal(sanitizeReplyHtml(kept), kept);
+    assert.equal(
+        sanitizeReplyHtml(kept),
+        '&lt;div class=&quot;card&quot;&gt;&lt;style&gt;.card{color:red}&lt;/style&gt;&lt;b&gt;Mood&lt;/b&gt;: wary&lt;/div&gt;',
+    );
 });
 
 test('a web page export is named as one', () => {
@@ -404,7 +598,7 @@ test('a saved web page keeps the line breaks the prose depends on', () => {
     // Three paragraphs of prose, so the breaks between them have to survive.
     assert.equal((page.match(/<br>/g) ?? []).length, 4);
     assert.match(page, /She turns away\.<br>/);
-    assert.match(page, /<font color="#CC79A7">"There's tape on the counter,"<\/font> she says\.<br>/);
+    assert.match(page, /&lt;font color=&quot;#CC79A7&quot;&gt;&quot;There&#39;s tape on the counter,&quot;&lt;\/font&gt; she says\.<br>/);
     // The typed turn is escaped text, kept by the page's own white-space rule.
     assert.match(page, /white-space: pre-wrap/);
     assert.match(page, /Line one\.\nLine two\./);

@@ -35,6 +35,135 @@ test('the wand item opens the lab as a page of its own', async ({ page }) => {
     await expect(workspace.locator('.sbpl-page-title')).toHaveText('Prompting Lab');
 });
 
+test('the wand item is keyboard operable and regains focus when the page closes', async ({ page }) => {
+    const launcher = page.locator('#sbpl-menu-item');
+    await expect(launcher).toHaveAttribute('role', 'button');
+    await expect(launcher).toHaveAttribute('tabindex', '0');
+
+    for (const key of ['Enter', 'Space']) {
+        await launcher.focus();
+        await page.keyboard.press(key);
+        await expect(page.locator('#sbpl-page')).toBeVisible();
+        await page.locator('.sbpl-page-close').click();
+        await expect(launcher).toBeFocused();
+    }
+});
+
+test('prompt maximize controls forward keyboard activation to host clicks', async ({ page }) => {
+    await page.evaluate(async () => {
+        const { promptField } = await import('/src/dom.js');
+        const { wrapper } = promptField('Fixture prompt');
+        wrapper.id = 'fixture-prompt';
+        document.addEventListener('click', (event) => {
+            if (event.target.closest?.('#fixture-prompt .editor_maximize')) {
+                document.body.dataset.maximizeClicks = String(
+                    Number(document.body.dataset.maximizeClicks ?? 0) + 1,
+                );
+            }
+        });
+        document.body.append(wrapper);
+    });
+
+    const maximize = page.locator('#fixture-prompt .editor_maximize');
+    for (const [key, clicks] of [['Enter', '1'], ['Space', '2']]) {
+        await maximize.focus();
+        await page.keyboard.press(key);
+        await expect(page.locator('body')).toHaveAttribute('data-maximize-clicks', clicks);
+    }
+    await maximize.evaluate(node => node.click());
+    await expect(page.locator('body')).toHaveAttribute('data-maximize-clicks', '3');
+});
+
+test('the full-page modal inerts its background and contains keyboard and programmatic focus', async ({ page }) => {
+    await page.locator('#extensions-settings-button').evaluate(node => node.setAttribute('inert', ''));
+    await page.locator('#sbpl-menu-item').click();
+    await expect(page.locator('#extensionsMenu')).toHaveAttribute('inert', '');
+    await expect(page.locator('#extensions-settings-button')).toHaveAttribute('inert', '');
+
+    await page.evaluate(() => {
+        const sibling = document.createElement('div');
+        sibling.id = 'fixture-late-background';
+        document.body.append(sibling);
+    });
+    await expect(page.locator('#fixture-late-background')).toHaveAttribute('inert', '');
+
+    const trapped = await page.evaluate(async () => {
+        const background = document.getElementById('extensionsMenu');
+        background.removeAttribute('inert');
+        document.getElementById('sbpl-menu-item').focus();
+        await new Promise(requestAnimationFrame);
+        background.setAttribute('inert', '');
+        return document.getElementById('sbpl-page').contains(document.activeElement);
+    });
+    expect(trapped).toBe(true);
+
+    const wrapped = await page.evaluate(() => {
+        const workspace = document.getElementById('sbpl-page');
+        const details = document.createElement('details');
+        details.open = true;
+        const summary = document.createElement('summary');
+        summary.textContent = 'Last summary';
+        details.append(summary);
+        const negative = document.createElement('div');
+        negative.tabIndex = -2;
+        negative.textContent = 'Not tabbable';
+        workspace.append(details, negative);
+        summary.focus();
+        const event = new KeyboardEvent('keydown', {
+            key: 'Tab',
+            bubbles: true,
+            cancelable: true,
+        });
+        summary.dispatchEvent(event);
+        return event.defaultPrevented && workspace.contains(document.activeElement)
+            && document.activeElement !== summary;
+    });
+    expect(wrapped).toBe(true);
+
+    await page.locator('.sbpl-page-close').click();
+    await expect(page.locator('#extensionsMenu')).not.toHaveAttribute('inert', '');
+    await expect(page.locator('#extensions-settings-button')).toHaveAttribute('inert', '');
+});
+
+test('a host dialog can open above the full-page workspace without releasing the background', async ({ page }) => {
+    await page.locator('#sbpl-menu-item').click();
+    await page.evaluate(() => {
+        const dialog = document.createElement('dialog');
+        dialog.id = 'fixture-host-dialog';
+        dialog.className = 'popup';
+        const action = document.createElement('button');
+        action.id = 'fixture-host-dialog-action';
+        action.autofocus = true;
+        action.textContent = 'Host action';
+        dialog.append(action);
+        document.body.append(dialog);
+        dialog.showModal();
+    });
+
+    await expect(page.locator('#fixture-host-dialog')).not.toHaveAttribute('inert', '');
+    await expect(page.locator('#fixture-host-dialog-action')).toBeFocused();
+    await expect(page.locator('#extensionsMenu')).toHaveAttribute('inert', '');
+
+    await page.evaluate(() => {
+        const background = document.createElement('button');
+        background.id = 'fixture-dialog-background';
+        document.body.append(background);
+    });
+    await expect(page.locator('#fixture-dialog-background')).toHaveAttribute('inert', '');
+
+    const trappedAgain = await page.evaluate(async () => {
+        document.getElementById('fixture-host-dialog').close();
+        document.getElementById('fixture-host-dialog').remove();
+        const background = document.getElementById('extensionsMenu');
+        background.removeAttribute('inert');
+        document.getElementById('sbpl-menu-item').focus();
+        await new Promise(requestAnimationFrame);
+        background.setAttribute('inert', '');
+        return document.getElementById('sbpl-page').contains(document.activeElement);
+    });
+    expect(trappedAgain).toBe(true);
+});
+
 test('closing the page puts the workbench back in the drawer', async ({ page }) => {
     await page.locator('#sbpl-menu-item').click();
     await page.locator('.sbpl-page-close').click();
@@ -129,11 +258,26 @@ test('the rail counts what the workspace holds and keeps the count current', asy
 test('the workspace header reports whether the host can run the lab', async ({ page }) => {
     await page.locator('#sbpl-menu-item').click();
     const status = page.locator('.sbpl-page-status');
-    await expect(status).toContainText('Tests spend no tokens');
+    await expect(status).toContainText('Only 3 tabs use tokens');
+    await expect(status.locator('.sbpl-pill-quiet')).toHaveAttribute('title', /Compare scenes/);
     await page.evaluate(() => globalThis.fixtureSetAvailability({ ok: true, warnings: [] }));
     await expect(status).toContainText('Host ready');
     await page.evaluate(() => globalThis.fixtureSetAvailability({ ok: false, reason: 'Missing tools.' }));
     await expect(status).toContainText('Host not compatible');
+});
+
+test('a global refresh dirties inactive tabs until they are activated', async ({ page }) => {
+    await page.evaluate(() => globalThis.fixtureSeedSuite('suite-a', 'Suite A'));
+    await page.locator('#sbpl-menu-item').click();
+    await page.locator('#sbpl-tab-run').click();
+    const suites = page.locator('#sbpl-run-suite option');
+    await expect(suites).toHaveText(['Suite A (0)']);
+
+    await page.locator('#sbpl-tab-cases').click();
+    await page.evaluate(() => globalThis.fixtureSeedSuite('suite-b', 'Suite B'));
+    await page.evaluate(() => globalThis.fixtureEmit('chat-changed'));
+    await page.locator('#sbpl-tab-run').click();
+    await expect(suites).toHaveText(['Suite A (0)', 'Suite B (0)']);
 });
 
 test('a wide workspace edits beside the list instead of below it', async ({ page }) => {
@@ -225,6 +369,8 @@ test('an incompatible host is reported in the drawer and the workbench', async (
     const banner = page.locator('#sbpl-workbench .sbpl-availability');
     await expect(banner).toBeVisible();
     await expect(banner).toHaveText('Missing tools: ChatCompletion.');
+    await expect(page.locator('#sbpl-panel')).toHaveAttribute('inert', '');
+    await expect(page.locator('#sbpl-panel')).toHaveAttribute('aria-disabled', 'true');
 });
 
 test('host warnings are surfaced without blocking use', async ({ page }) => {
@@ -237,6 +383,51 @@ test('host warnings are surfaced without blocking use', async ({ page }) => {
     await expect(banner).toBeVisible();
     await expect(banner).toHaveClass(/sbpl-availability-warning/);
     await expect(page.locator('#sbpl-settings .sbpl-settings-status')).toBeHidden();
+});
+
+test('a workbench control regains focus after its host subtree is replaced', async ({ page }) => {
+    await page.locator('#extensions-settings-button > .drawer-toggle').click();
+    await page.locator('#sbpl-settings > .inline-drawer-toggle').click();
+    const createSuite = page.getByRole('button', { name: 'Create suite' });
+    await createSuite.focus();
+
+    await page.evaluate(async () => {
+        const oldHost = document.getElementById('extensions_settings2');
+        const newHost = document.createElement('main');
+        newHost.id = oldHost.id;
+        oldHost.replaceWith(newHost);
+        await globalThis.fixtureEmit('chat-changed');
+    });
+
+    await expect(page.getByRole('button', { name: 'Create suite' })).toBeFocused();
+});
+
+test('confirm buttons stay disabled for async work and surface rejection', async ({ page }) => {
+    await page.evaluate(async () => {
+        const { confirmButton } = await import('/src/dom.js');
+        let resolve;
+        globalThis.fixtureFinishConfirm = () => resolve();
+        const pending = new Promise(done => { resolve = done; });
+        const success = confirmButton('Delete', () => pending);
+        success.id = 'fixture-confirm-success';
+        const failure = confirmButton('Remove', async () => { throw new Error('Storage unavailable'); });
+        failure.id = 'fixture-confirm-failure';
+        document.body.append(success, failure);
+    });
+
+    const success = page.locator('#fixture-confirm-success');
+    await success.click();
+    await success.click();
+    await expect(success).toBeDisabled();
+    await page.evaluate(() => globalThis.fixtureFinishConfirm());
+    await expect(success).toBeEnabled();
+    await expect(success).toHaveText('Delete');
+
+    const failure = page.locator('#fixture-confirm-failure');
+    await failure.click();
+    await failure.click();
+    await expect(failure).toBeEnabled();
+    await expect(failure).toHaveText('Remove failed: Storage unavailable');
 });
 
 test('deactivate removes everything the extension added', async ({ page }) => {

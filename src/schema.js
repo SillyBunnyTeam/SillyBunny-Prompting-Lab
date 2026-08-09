@@ -10,6 +10,7 @@ import {
 } from './constants.js';
 import { ANCHOR_LENGTH } from './compare.js';
 import { isSupportedApiId, modeOf, validatePresetPayload } from './presets.js';
+import { regexSafetyProblem } from './safe-regex.js';
 
 /**
  * Pure data helpers for every stored object. No host imports: everything here
@@ -78,6 +79,12 @@ function normalizeVolatileSpan(value) {
             return null;
         }
         output[key] = value[key];
+    }
+    if (value.occurrence !== undefined) {
+        if (!Number.isInteger(value.occurrence) || value.occurrence < 0) {
+            return null;
+        }
+        output.occurrence = value.occurrence;
     }
     if (typeof output.text !== 'string' || typeof output.otherText !== 'string') {
         return null;
@@ -226,6 +233,10 @@ export function validateAssertion(assertion) {
                         new RegExp(normalized.value);
                     } catch (error) {
                         problems.push(`That search pattern is not valid: ${error?.message ?? error}`);
+                    }
+                    const safetyProblem = regexSafetyProblem(normalized.value);
+                    if (!problems.length && safetyProblem) {
+                        problems.push(safetyProblem);
                     }
                 }
             }
@@ -518,10 +529,23 @@ export function createRun(patch = {}) {
 
 export function normalizeRun(value) {
     const source = plainObject(value);
+    const sourceVersion = integer(source.v, 0, 0);
     const capture = plainObject(source.capture);
     const cache = plainObject(source.cache);
     const environment = plainObject(source.environment);
     const ab = plainObject(source.ab);
+    const assertionResults = list(source.assertionResults).map(result => ({
+        index: integer(result?.index, 0, 0),
+        type: text(result?.type),
+        pass: result?.pass === null ? null : bool(result?.pass),
+        actual: result?.actual ?? null,
+        message: text(result?.message),
+    }));
+    let status = STATUS_VALUES.has(source.status) ? source.status : STATUS.ERROR;
+    if ((status === STATUS.PASS || status === STATUS.CHANGED)
+        && assertionResults.some(result => result.pass === null)) {
+        status = STATUS.UNCHECKED;
+    }
     return {
         v: RUN_VERSION,
         id: text(source.id) || newId(),
@@ -535,7 +559,7 @@ export function normalizeRun(value) {
         variantLabel: text(source.variantLabel),
         startedAt: text(source.startedAt),
         durationMs: integer(source.durationMs, 0, 0),
-        status: STATUS_VALUES.has(source.status) ? source.status : STATUS.ERROR,
+        status,
         environment: {
             forkVersion: text(environment.forkVersion),
             apiType: environment.apiType === 'tc' ? 'tc' : 'cc',
@@ -575,6 +599,14 @@ export function normalizeRun(value) {
             },
             wiPasses: list(capture.wiPasses).map(pass => list(pass)),
             squashedMessages: Array.isArray(capture.squashedMessages) ? capture.squashedMessages : null,
+            metricsComplete: sourceVersion >= RUN_VERSION
+                ? bool(capture.metricsComplete, true)
+                : false,
+            capabilities: {
+                syntheticMessagesIsolated: bool(plainObject(capture.capabilities).syntheticMessagesIsolated),
+                macroStateSandboxed: bool(plainObject(capture.capabilities).macroStateSandboxed),
+                localMacroStateRestored: bool(plainObject(capture.capabilities).localMacroStateRestored),
+            },
         },
         cache: {
             predictedBreakpoints: list(cache.predictedBreakpoints)
@@ -587,13 +619,7 @@ export function normalizeRun(value) {
             source: text(cache.source, 'unknown') || 'unknown',
         },
         caveats: list(source.caveats).map(item => text(item)).filter(Boolean),
-        assertionResults: list(source.assertionResults).map(result => ({
-            index: integer(result?.index, 0, 0),
-            type: text(result?.type),
-            pass: result?.pass === null ? null : bool(result?.pass),
-            actual: result?.actual ?? null,
-            message: text(result?.message),
-        })),
+        assertionResults,
         diffVsBaseline: source.diffVsBaseline ?? null,
         ab: Array.isArray(ab.runs) ? { runs: ab.runs } : null,
         error: source.error ?? null,
@@ -619,6 +645,9 @@ export function resolveStatus({ assertionResults = [], hasBaseline = false, diff
     }
     if (assertionResults.some(result => result && result.pass === false)) {
         return STATUS.FAIL;
+    }
+    if (assertionResults.some(result => result && result.pass === null)) {
+        return STATUS.UNCHECKED;
     }
     if (hasBaseline && !diffIsEmpty) {
         return STATUS.CHANGED;

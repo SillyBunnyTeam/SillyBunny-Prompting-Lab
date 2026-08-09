@@ -1,9 +1,11 @@
-import { SECTION_LABEL, STATUS, STATUS_LABEL } from '../constants.js';
+import { STATUS, STATUS_LABEL } from '../constants.js';
+import { compareRuns } from '../compare.js';
 import { button, element, emptyState, errorMessage, formatTokens, replace, statusRegion } from '../dom.js';
 import { collapseUnchanged, diffSection, isUnchanged, PART } from '../diff.js';
 import { loadHost } from '../host.js';
 import { macroConfigDiffers } from '../integrations/macroenhanced.js';
 import * as lab from '../lab.js';
+import { registerActiveTask } from '../operations.js';
 import { CC_API_ID, isSupportedApiId, labelForApiId, PRESET_API_IDS } from '../presets.js';
 import { getSettings, updateSettings } from '../settings.js';
 import * as storage from '../storage.js';
@@ -30,6 +32,7 @@ export function createDiffTab() {
     let summaryHost = null;
     let addSetupButton = null;
     let setupRunButton = null;
+    let setupStopButton = null;
     let setups = [];
 
     let suites = [];
@@ -38,47 +41,73 @@ export function createDiffTab() {
     let activeCase = null;
     let runIndex = [];
     let renderSeq = 0;
+    let reloadEpoch = 0;
+    let setupRunEpoch = 0;
+    let setupController = null;
     let running = false;
 
-    async function reload() {
-        suites = await storage.listSuites();
-        activeSuite = suites.find(suite => suite.id === activeSuite?.id) ?? suites[0] ?? null;
-        replace(suiteSelect, ...suites.map(suite => element('option', {
+    async function reload(epoch = ++reloadEpoch) {
+        const suiteId = activeSuite?.id;
+        const nextSuites = await storage.listSuites();
+        if (epoch !== reloadEpoch || !root) {
+            return;
+        }
+        suites = nextSuites;
+        activeSuite = nextSuites.find(suite => suite.id === suiteId) ?? nextSuites[0] ?? null;
+        replace(suiteSelect, ...nextSuites.map(suite => element('option', {
             text: suite.name,
             attributes: { value: suite.id },
         })));
         if (activeSuite) {
             suiteSelect.value = activeSuite.id;
         }
-        await reloadCases();
+        await reloadCases(epoch);
     }
 
-    async function reloadCases() {
-        cases = activeSuite ? await lab.getSuiteCases(activeSuite) : [];
-        activeCase = cases.find(item => item.id === activeCase?.id) ?? cases[0] ?? null;
-        replace(caseSelect, ...cases.map(item => element('option', {
+    async function reloadCases(epoch = ++reloadEpoch) {
+        const suite = activeSuite;
+        const caseId = activeCase?.id;
+        const savedSetups = setups.map(entry => entry.read());
+        renderSeq++;
+        const nextCases = suite ? await lab.getSuiteCases(suite) : [];
+        if (epoch !== reloadEpoch || activeSuite?.id !== suite?.id || !root) {
+            return;
+        }
+        cases = nextCases;
+        activeCase = nextCases.find(item => item.id === caseId) ?? nextCases[0] ?? null;
+        replace(caseSelect, ...nextCases.map(item => element('option', {
             text: item.name,
             attributes: { value: item.id },
         })));
         if (activeCase) {
             caseSelect.value = activeCase.id;
         }
-        renderSetups();
-        await reloadRuns();
+        renderSetups(activeCase?.id === caseId ? savedSetups : []);
+        await reloadRuns({}, epoch);
     }
 
     /**
      * @param {{base?: string, compare?: string}} [preferred] runs to select
      *   instead of whatever was chosen before, used after a setup comparison.
      */
-    async function reloadRuns({ base = '', compare = '' } = {}) {
+    async function reloadRuns({ base = '', compare = '' } = {}, epoch = ++reloadEpoch) {
         // A refresh must not silently swap a pair of runs the user chose.
         const previousBase = base || baseSelect.value;
         const previousCompare = compare || compareSelect.value;
-        runIndex = activeCase ? await storage.listRuns(activeCase.id) : [];
-        const has = id => runIndex.some(entry => entry.id === id);
-        const baselineId = activeSuite?.baselines?.[activeCase?.id ?? ''] ?? '';
-        const options = runIndex.map(entry => element('option', {
+        const suite = activeSuite;
+        const testCase = activeCase;
+        renderSeq++;
+        const nextRunIndex = testCase ? await storage.listRuns(testCase.id) : [];
+        if (epoch !== reloadEpoch
+            || activeSuite?.id !== suite?.id
+            || activeCase?.id !== testCase?.id
+            || !root) {
+            return;
+        }
+        runIndex = nextRunIndex;
+        const has = id => nextRunIndex.some(entry => entry.id === id);
+        const baselineId = suite?.baselines?.[testCase?.id ?? ''] ?? '';
+        const options = nextRunIndex.map(entry => element('option', {
             text: `${entry.variantLabel ? `${entry.variantLabel} · ` : ''}${describeWhen(entry.startedAt)} · ${STATUS_LABEL[entry.status] ?? entry.status}${entry.id === baselineId ? ' · baseline' : ''}`,
             attributes: { value: entry.id },
         }));
@@ -89,13 +118,13 @@ export function createDiffTab() {
             baseSelect.value = previousBase;
         } else if (baselineId && has(baselineId)) {
             baseSelect.value = baselineId;
-        } else if (runIndex.length > 1) {
-            baseSelect.value = runIndex[1].id;
+        } else if (nextRunIndex.length > 1) {
+            baseSelect.value = nextRunIndex[1].id;
         }
         if (has(previousCompare)) {
             compareSelect.value = previousCompare;
-        } else if (runIndex.length) {
-            compareSelect.value = runIndex[0].id;
+        } else if (nextRunIndex.length) {
+            compareSelect.value = nextRunIndex[0].id;
         }
         await render();
     }
@@ -115,6 +144,10 @@ export function createDiffTab() {
         // Two renders can overlap when selects change quickly; only the
         // newest one may write, or the outputs stack up.
         const seq = ++renderSeq;
+        const caseId = activeCase?.id;
+        const baselineId = baseSelect.value;
+        const currentId = compareSelect.value;
+        const normalize = !rawToggle.checked;
         replace(output);
         if (!activeCase) {
             output.append(emptyState(
@@ -132,10 +165,10 @@ export function createDiffTab() {
         }
 
         const [baseline, current] = await Promise.all([
-            storage.getRun(baseSelect.value),
-            storage.getRun(compareSelect.value),
+            storage.getRun(baselineId),
+            storage.getRun(currentId),
         ]);
-        if (seq !== renderSeq) {
+        if (seq !== renderSeq || activeCase?.id !== caseId) {
             return;
         }
         if (!baseline || !current) {
@@ -149,27 +182,38 @@ export function createDiffTab() {
 
         renderEnvironmentDelta(baseline, current);
 
-        const normalize = !rawToggle.checked;
         const spans = current.cache?.volatileSpans ?? [];
-        const ids = [...new Set([
-            ...(baseline.capture?.sections ?? []).map(section => section.id),
-            ...(current.capture?.sections ?? []).map(section => section.id),
-        ])];
-
-        const rows = ids.map(id => diffSection(baseline, current, id, {
-            volatileSpans: spans,
-            normalize,
+        const comparison = compareRuns(current, baseline, { volatileSpans: spans, normalize });
+        const occurrenceCounts = new Map();
+        for (const row of comparison.tokenDeltas) {
+            occurrenceCounts.set(row.id, (occurrenceCounts.get(row.id) ?? 0) + 1);
+        }
+        const rows = comparison.tokenDeltas.map((delta) => ({
+            ...diffSection(baseline, current, delta.id, {
+                occurrence: delta.occurrence,
+                volatileSpans: spans,
+                normalize,
+            }),
+            label: occurrenceCounts.get(delta.id) > 1
+                ? `${delta.label} (occurrence ${delta.occurrence + 1} of ${occurrenceCounts.get(delta.id)})`
+                : delta.label,
+            baselineTokens: delta.baseline,
+            currentTokens: delta.current,
+            onlyInBaseline: delta.status === 'removed',
+            onlyInCurrent: delta.status === 'added',
         }));
-        const changed = rows.filter(row => !isUnchanged(row.parts));
+        const changed = rows.filter(row => row.onlyInBaseline || row.onlyInCurrent || !isUnchanged(row.parts));
 
         const summary = element('p', { className: 'sbpl-summary' });
-        const totalDelta = Number(current.capture?.tokenTable?.total ?? 0)
-            - Number(baseline.capture?.tokenTable?.total ?? 0);
         summary.textContent = changed.length
-            ? `${changed.length} section${changed.length === 1 ? '' : 's'} differ, ${describeDelta(totalDelta)}.`
-            : normalize
-                ? 'These two runs produce the same prompt, ignoring parts that change every time.'
-                : 'These two runs produce exactly the same prompt.';
+            ? `${changed.length} section${changed.length === 1 ? '' : 's'} differ, ${describeDelta(comparison.totalDelta)}.`
+            : comparison.outboundChanged || comparison.sectionOrderChanged
+                ? "The section text is unchanged, but the final outbound prompt's structure, message order, or protocol fields changed."
+                : comparison.identical
+                    ? normalize
+                        ? 'These two runs produce the same prompt, ignoring parts that change every time.'
+                        : 'These two runs produce exactly the same prompt.'
+                    : comparison.summary;
         output.append(summary);
 
         output.append(renderTokenTable(rows));
@@ -239,7 +283,7 @@ export function createDiffTab() {
         for (const row of rows) {
             const delta = row.currentTokens - row.baselineTokens;
             const tr = element('tr');
-            tr.append(element('td', { text: SECTION_LABEL[row.id] ?? row.id }));
+            tr.append(element('td', { text: row.label }));
             tr.append(element('td', { className: 'sbpl-number', text: formatTokens(row.baselineTokens) }));
             tr.append(element('td', { className: 'sbpl-number', text: formatTokens(row.currentTokens) }));
             tr.append(element('td', {
@@ -256,14 +300,13 @@ export function createDiffTab() {
     function renderSectionDiff(row) {
         const wrapper = element('details', { className: 'sbpl-diff-section' });
         wrapper.open = true;
-        const label = SECTION_LABEL[row.id] ?? row.id;
         const delta = row.currentTokens - row.baselineTokens;
         const suffix = row.onlyInBaseline
             ? ' (removed)'
             : (row.onlyInCurrent ? ' (added)' : '');
         wrapper.append(element('summary', {
             className: 'sbpl-diff-summary',
-            text: `${label}${suffix} — ${delta === 0 ? 'same size' : `${delta > 0 ? '+' : '−'}${Math.abs(delta).toLocaleString()} tokens`}`,
+            text: `${row.label}${suffix} — ${delta === 0 ? 'same size' : `${delta > 0 ? '+' : '−'}${Math.abs(delta).toLocaleString()} tokens`}`,
         }));
 
         const pre = element('pre', { className: 'sbpl-diff-body' });
@@ -380,7 +423,7 @@ export function createDiffTab() {
         renumberSetups();
     }
 
-    function renderSetups() {
+    function renderSetups(savedSetups = []) {
         replace(setupHost);
         replace(summaryHost);
         setups = [];
@@ -407,7 +450,7 @@ export function createDiffTab() {
             className: 'menu_button sbpl-button sbpl-button-quiet',
         });
         const actions = element('div', { className: 'sbpl-controls' });
-        actions.append(addSetupButton, setupRunButton);
+        actions.append(addSetupButton, setupRunButton, setupStopButton);
 
         setupHost.append(
             element('p', {
@@ -422,8 +465,12 @@ export function createDiffTab() {
             actions,
         );
 
-        addSetup(options, { presetApiId: apiId, presetName: names.includes(pinnedName) ? pinnedName : '' });
-        addSetup(options, { presetApiId: apiId, presetName: names.find(name => name !== pinnedName) ?? '' });
+        if (savedSetups.length) {
+            savedSetups.slice(0, MAX_SETUPS).forEach(defaults => addSetup(options, defaults));
+        } else {
+            addSetup(options, { presetApiId: apiId, presetName: names.includes(pinnedName) ? pinnedName : '' });
+            addSetup(options, { presetApiId: apiId, presetName: names.find(name => name !== pinnedName) ?? '' });
+        }
     }
 
     function updateSetupControls() {
@@ -432,6 +479,8 @@ export function createDiffTab() {
         }
         setupRunButton.disabled = running || !activeSuite || !activeCase || setups.length < 2;
         setupRunButton.textContent = `Build this test case under ${setups.length} setups`;
+        setupStopButton.hidden = !running;
+        setupStopButton.disabled = !running;
         suiteSelect.disabled = running;
         caseSelect.disabled = running;
         for (const entry of setups) {
@@ -506,38 +555,79 @@ export function createDiffTab() {
         if (running || !activeSuite || !activeCase || setups.length < 2) {
             return;
         }
+        const epoch = ++setupRunEpoch;
+        const suite = structuredClone(activeSuite);
+        const testCase = structuredClone(activeCase);
+        suite.caseIds = [testCase.id];
+        const setupInputs = setups.map(entry => entry.read());
+        const controller = new AbortController();
+        setupController = controller;
         running = true;
         updateSetupControls();
         replace(summaryHost);
-        status.textContent = `Building this test case under ${setups.length} setups. Your character, persona, preset and connection change while it runs, and are put back afterwards.`;
+        status.textContent = `Building this test case under ${setupInputs.length} setups. Your character, persona, preset and connection change while it runs, and are put back afterwards.`;
+        let presetWarning = '';
         try {
+            const report = await lab.preflightSuite(suite);
+            if (epoch !== setupRunEpoch || setupController !== controller || !root || controller.signal.aborted) {
+                return;
+            }
+            if (report.unsavedPresetEdits && report.unsavedPresetEditsCertain) {
+                status.textContent = 'Save or discard your unsaved preset changes before comparing setups.';
+                return;
+            }
+            if (report.unsavedPresetEdits) {
+                presetWarning = 'SillyBunny could not confirm whether the preset panel has unsaved changes; any unsaved changes may be discarded.';
+                status.textContent = `${presetWarning} ${status.textContent}`;
+            }
             const host = await loadHost();
+            if (epoch !== setupRunEpoch || setupController !== controller || !root || controller.signal.aborted) {
+                return;
+            }
             const result = await lab.runSetups(
-                activeSuite,
-                activeCase,
-                setups.map(entry => entry.read()),
-                { host },
+                suite,
+                testCase,
+                setupInputs,
+                { host, signal: controller.signal },
             );
+            if (epoch !== setupRunEpoch || setupController !== controller || !root) {
+                return;
+            }
             const [first, second] = result.runs;
             await reloadRuns({ base: first?.id ?? '', compare: second?.id ?? '' });
+            if (epoch !== setupRunEpoch || setupController !== controller || !root) {
+                return;
+            }
             renderSetupSummary(result.runs);
 
             const failed = result.runs.filter(run => run?.status === STATUS.ERROR);
             const reason = failed[0]?.error?.message ?? 'the run did not finish.';
-            if (failed.length === result.runs.length) {
-                status.textContent = `No setup could be built: ${reason}`;
+            let completion;
+            if (result.aborted) {
+                completion = 'Stopped the setup comparison.';
+            } else if (failed.length === result.runs.length) {
+                completion = `No setup could be built: ${reason}`;
             } else if (failed.length) {
-                status.textContent = `${failed.length} of ${result.runs.length} setups could not be built: ${reason}`;
-            } else if (result.restoreProblems?.length) {
-                status.textContent = `Every setup was built, but your own settings could not be fully put back: ${result.restoreProblems.join('; ')}. Check your character, persona, preset and connection profile.`;
+                completion = `${failed.length} of ${result.runs.length} setups could not be built: ${reason}`;
             } else {
-                status.textContent = `All ${result.runs.length} setups were built. Your settings have been put back.`;
+                completion = `All ${result.runs.length} setups were built.`;
             }
+            const restoration = result.restoreProblems?.length
+                ? `Your own settings could not be fully put back: ${result.restoreProblems.join('; ')}. Check your character, persona, preset and connection profile.`
+                : 'Your settings have been put back.';
+            status.textContent = `${completion} ${restoration}${presetWarning ? ` ${presetWarning}` : ''}`;
         } catch (error) {
-            status.textContent = `The setups could not be compared: ${errorMessage(error)}`;
+            if (epoch === setupRunEpoch && setupController === controller && root) {
+                status.textContent = controller.signal.aborted
+                    ? 'Stopped the setup comparison.'
+                    : `The setups could not be compared: ${errorMessage(error)}`;
+            }
         } finally {
-            running = false;
-            updateSetupControls();
+            if (epoch === setupRunEpoch && setupController === controller) {
+                running = false;
+                setupController = null;
+                updateSetupControls();
+            }
         }
     }
 
@@ -547,15 +637,20 @@ export function createDiffTab() {
 
         suiteSelect = element('select', { className: 'text_pole sbpl-select', attributes: { 'aria-label': 'Suite' } });
         suiteSelect.addEventListener('change', async () => {
-            activeSuite = suites.find(suite => suite.id === suiteSelect.value) ?? null;
+            const epoch = ++reloadEpoch;
+            const suiteId = suiteSelect.value;
+            activeSuite = suites.find(suite => suite.id === suiteId) ?? null;
             activeCase = null;
-            await reloadCases();
+            await reloadCases(epoch);
         });
 
         caseSelect = element('select', { className: 'text_pole sbpl-select', attributes: { 'aria-label': 'Test case' } });
         caseSelect.addEventListener('change', async () => {
-            activeCase = cases.find(item => item.id === caseSelect.value) ?? null;
-            await reloadRuns();
+            const epoch = ++reloadEpoch;
+            const caseId = caseSelect.value;
+            activeCase = cases.find(item => item.id === caseId) ?? null;
+            renderSetups();
+            await reloadRuns({}, epoch);
         });
 
         baseSelect = element('select', { className: 'text_pole sbpl-select', attributes: { 'aria-label': 'Compare from' } });
@@ -576,10 +671,20 @@ export function createDiffTab() {
             if (!activeSuite || !activeCase || !compareSelect.value) {
                 return;
             }
-            const entry = runIndex.find(item => item.id === compareSelect.value);
-            await lab.promoteBaseline(activeSuite, activeCase.id, compareSelect.value);
-            status.textContent = `Saved the ${describeWhen(entry?.startedAt)} run as the baseline for this test case.`;
-            await reload();
+            const suite = structuredClone(activeSuite);
+            const caseId = activeCase.id;
+            const runId = compareSelect.value;
+            const entry = runIndex.find(item => item.id === runId);
+            const task = registerActiveTask('baseline promotion');
+            try {
+                await lab.promoteBaseline(suite, caseId, runId);
+                status.textContent = `Saved the ${describeWhen(entry?.startedAt)} run as the baseline for this test case.`;
+                await reload();
+            } catch (error) {
+                status.textContent = `That baseline could not be saved: ${errorMessage(error)}`;
+            } finally {
+                task.release();
+            }
         }, { className: 'menu_button sbpl-button' });
 
         controls.append(suiteSelect, caseSelect);
@@ -596,6 +701,11 @@ export function createDiffTab() {
             className: 'menu_button sbpl-button',
             title: 'Builds the same test case once per setup, then compares the prompts',
         });
+        setupStopButton = button('Stop', () => {
+            setupController?.abort();
+            status.textContent = 'Stopping after the current setup...';
+        }, { className: 'menu_button sbpl-button' });
+        setupStopButton.hidden = true;
         setupHost = element('div', { className: 'sbpl-setups' });
         summaryHost = element('div', { className: 'sbpl-setup-summary' });
 
@@ -623,6 +733,11 @@ export function createDiffTab() {
             }
         },
         dispose() {
+            reloadEpoch++;
+            renderSeq++;
+            setupRunEpoch++;
+            setupController?.abort();
+            setupController = null;
             root?.remove();
             root = null;
         },

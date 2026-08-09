@@ -31,6 +31,7 @@ export function createExperimentTab() {
     let greetingSelect = null;
     let greetingHost = null;
     let greetingChosen = false;
+    let greetingAvatar = '';
     let previewHost = null;
     let card = null;
     let greetings = [];
@@ -47,10 +48,28 @@ export function createExperimentTab() {
     let profiles = [];
     let characters = [];
     let controller = null;
+    let analysisController = null;
     let lastResult = null;
+    let runInputs = [];
+    let reloadEpoch = 0;
+    let actionEpoch = 0;
+    let analysisEpoch = 0;
 
-    async function reload() {
-        prompts = await storage.listPromptDrafts();
+    function startReload() {
+        const epoch = ++reloadEpoch;
+        void reload(epoch).catch((error) => {
+            if (epoch === reloadEpoch && status) {
+                status.textContent = `Saved prompts could not be loaded: ${errorMessage(error)}`;
+            }
+        });
+    }
+
+    async function reload(epoch) {
+        const nextPrompts = await storage.listPromptDrafts();
+        if (epoch !== reloadEpoch) {
+            return;
+        }
+        prompts = nextPrompts;
         renderLoaderOptions();
         loadProfiles();
         loadCharacters();
@@ -58,6 +77,7 @@ export function createExperimentTab() {
 
     function renderLoaderOptions() {
         const previous = loaderPromptSelect.value;
+        const previousVersion = loaderVersionSelect.value;
         replace(loaderPromptSelect, ...prompts.map(prompt => element('option', {
             text: prompt.title,
             attributes: { value: prompt.id },
@@ -65,17 +85,19 @@ export function createExperimentTab() {
         if (prompts.some(prompt => prompt.id === previous)) {
             loaderPromptSelect.value = previous;
         }
-        renderLoaderVersions();
+        renderLoaderVersions(previousVersion);
     }
 
-    function renderLoaderVersions() {
+    function renderLoaderVersions(preferredVersion = '') {
         const prompt = prompts.find(item => item.id === loaderPromptSelect.value);
         replace(loaderVersionSelect, ...(prompt?.versions ?? []).map(version => element('option', {
             text: version.label,
             attributes: { value: version.id },
         })));
         if (prompt) {
-            loaderVersionSelect.value = getSelectedVersion(prompt)?.id ?? prompt.versions[0].id;
+            loaderVersionSelect.value = prompt.versions.some(version => version.id === preferredVersion)
+                ? preferredVersion
+                : (getSelectedVersion(prompt)?.id ?? prompt.versions[0].id);
         }
     }
 
@@ -119,8 +141,14 @@ export function createExperimentTab() {
 
     /** The openings the chosen card offers, and the one both requests will use. */
     function renderGreetings() {
-        const previous = greetingSelect.value;
-        card = characterSelect.value ? readCharacterCard(characterSelect.value, getContext()) : null;
+        const avatar = characterSelect.value;
+        const changedCharacter = avatar !== greetingAvatar;
+        const previous = changedCharacter ? '' : greetingSelect.value;
+        if (changedCharacter) {
+            greetingChosen = false;
+            greetingAvatar = avatar;
+        }
+        card = avatar ? readCharacterCard(avatar, getContext()) : null;
         greetings = greetingChoices(card);
         replace(
             greetingSelect,
@@ -162,27 +190,54 @@ export function createExperimentTab() {
     }
 
     function updateControls() {
-        const ready = profiles.some(profile => profile.usable);
-        runButton.disabled = !ready || Boolean(controller);
-        cancelButton.hidden = !controller;
+        const busy = Boolean(controller);
+        const ready = profiles.some(profile => profile.id === profileSelect.value && profile.usable);
+        runButton.disabled = !ready || busy;
+        cancelButton.hidden = !busy;
+        for (const control of runInputs) {
+            control.disabled = busy;
+        }
+        if (characterPicker) {
+            characterPicker.node.inert = busy;
+        }
     }
 
     /* --------------------------------------------------------------- run */
 
     async function run() {
+        if (controller) {
+            return;
+        }
         const promptA = promptATextarea.value;
         const promptB = promptBTextarea.value;
         if (!promptA.trim() && !promptB.trim()) {
             status.textContent = 'Write a prompt in at least one of the two boxes first.';
             return;
         }
-        if (!profileSelect.value) {
+        const profile = profiles.find(item => item.id === profileSelect.value && item.usable);
+        if (!profile) {
             status.textContent = 'Choose a connection profile.';
             return;
         }
 
-        controller = new AbortController();
-        const { signal } = controller;
+        const input = {
+            promptA,
+            promptB,
+            role: roleSelect.value,
+            character: characterSelect.value
+                ? readCharacterCard(characterSelect.value, getContext())
+                : null,
+            scenario: scenarioTextarea.value,
+            greeting: chosenGreeting(),
+            profileId: profile.id,
+            maxTokens: updateSettings({ abMaxTokens: Number(tokensInput.value) }).abMaxTokens,
+        };
+        tokensInput.value = String(input.maxTokens);
+        stopAnalysis();
+        const requestController = new AbortController();
+        controller = requestController;
+        const { signal } = requestController;
+        const epoch = ++actionEpoch;
         updateControls();
         lastResult = null;
         replace(output);
@@ -190,44 +245,40 @@ export function createExperimentTab() {
         status.textContent = 'Waiting for both replies. This sends the prompts and uses tokens.';
 
         try {
-            const character = characterSelect.value
-                ? readCharacterCard(characterSelect.value, getContext())
-                : null;
-            const scenario = scenarioTextarea.value;
             const replies = await runExperiment({
-                promptA,
-                promptB,
-                role: roleSelect.value,
-                character,
-                scenario,
-                greeting: chosenGreeting(),
-                profileId: profileSelect.value,
-                maxTokens: getSettings().abMaxTokens,
+                ...input,
                 signal,
             });
+            if (epoch !== actionEpoch) {
+                return;
+            }
             lastResult = {
                 replies,
-                promptA,
-                promptB,
-                scenario,
-                characterName: character?.name ?? '',
+                promptA: input.promptA,
+                promptB: input.promptB,
+                scenario: input.scenario,
+                characterName: input.character?.name ?? '',
+                profileId: input.profileId,
             };
-            renderReplies(replies);
+            renderReplies(replies, profile);
             renderAnalysisControls();
             status.textContent = signal.aborted ? 'Stopped.' : 'Finished.';
         } catch (error) {
-            status.textContent = `The replies could not be fetched: ${errorMessage(error)}`;
+            if (epoch === actionEpoch) {
+                status.textContent = `The replies could not be fetched: ${errorMessage(error)}`;
+            }
         } finally {
-            controller = null;
-            updateControls();
+            if (epoch === actionEpoch && controller === requestController) {
+                controller = null;
+                updateControls();
+            }
         }
     }
 
-    function renderReplies(replies) {
-        const profile = profiles.find(item => item.id === profileSelect.value);
+    function renderReplies(replies, profile) {
         const note = element('p', { className: 'sbpl-status' });
         note.textContent = 'Both requests shared the same scenario, character, and connection'
-            + `${profile ? ` (${profile.name})` : ''}; only the prompt differed.`;
+            + `${profile ? ` (${profile.name})` : ''}, but their replies are independent stochastic samples. Only the prompt input differed.`;
         output.append(note);
 
         const grid = element('div', { className: 'sbpl-ab-grid' });
@@ -273,15 +324,13 @@ export function createExperimentTab() {
             option.disabled = !profile.usable;
             analysisProfileSelect.append(option);
         }
-        if (profileSelect.value) {
-            analysisProfileSelect.value = profileSelect.value;
+        if (lastResult.profileId) {
+            analysisProfileSelect.value = lastResult.profileId;
         }
 
         const analysisOutput = element('div', { className: 'sbpl-ab-output' });
         const analyzeButton = button('Get the analysis', () => {
-            void analyze(analysisProfileSelect.value, analysisOutput, analyzeButton).catch((error) => {
-                status.textContent = errorMessage(error);
-            });
+            void analyze(analysisProfileSelect, analysisOutput, analyzeButton);
         }, { className: 'menu_button sbpl-button' });
 
         const controls = element('div', { className: 'sbpl-controls' });
@@ -290,32 +339,59 @@ export function createExperimentTab() {
         analysisHost.append(wrapper);
     }
 
-    async function analyze(profileId, analysisOutput, analyzeButton) {
-        if (!lastResult || !profileId) {
+    function stopAnalysis() {
+        analysisEpoch += 1;
+        analysisController?.abort();
+        analysisController = null;
+    }
+
+    async function analyze(analysisProfileSelect, analysisOutput, analyzeButton) {
+        const source = lastResult;
+        const profileId = analysisProfileSelect.value;
+        if (!source || analysisController
+            || !profiles.some(profile => profile.id === profileId && profile.usable)) {
             return;
         }
+        const [replyA, replyB] = source.replies;
+        const details = {
+            promptA: source.promptA,
+            promptB: source.promptB,
+            replyA: replyA?.text ?? '',
+            replyB: replyB?.text ?? '',
+            scenario: source.scenario,
+            characterName: source.characterName,
+        };
+        const requestController = new AbortController();
+        analysisController = requestController;
+        const epoch = ++analysisEpoch;
+        const runEpoch = actionEpoch;
         analyzeButton.disabled = true;
+        analysisProfileSelect.disabled = true;
         status.textContent = 'Waiting for the analysis. This sends a request and uses tokens.';
         try {
-            const [replyA, replyB] = lastResult.replies;
-            const result = await requestAnalysis({
-                promptA: lastResult.promptA,
-                promptB: lastResult.promptB,
-                replyA: replyA?.text ?? '',
-                replyB: replyB?.text ?? '',
-                scenario: lastResult.scenario,
-                characterName: lastResult.characterName,
-            }, {
+            const result = await requestAnalysis(details, {
                 profileId,
                 maxTokens: ANALYSIS_MAX_TOKENS,
+                signal: requestController.signal,
             });
+            if (epoch !== analysisEpoch || runEpoch !== actionEpoch) {
+                return;
+            }
             replace(analysisOutput, element('pre', {
                 className: result.error ? 'sbpl-ab-body sbpl-ab-error' : 'sbpl-ab-body',
                 text: result.error ?? result.text,
             }));
             status.textContent = result.error ? 'The analysis could not be fetched.' : 'Finished.';
+        } catch (error) {
+            if (epoch === analysisEpoch && runEpoch === actionEpoch) {
+                status.textContent = `The analysis could not be fetched: ${errorMessage(error)}`;
+            }
         } finally {
-            analyzeButton.disabled = false;
+            if (epoch === analysisEpoch && analysisController === requestController) {
+                analysisController = null;
+                analyzeButton.disabled = false;
+                analysisProfileSelect.disabled = false;
+            }
         }
     }
 
@@ -351,7 +427,7 @@ export function createExperimentTab() {
             className: 'text_pole sbpl-select',
             attributes: { 'aria-label': 'Prompt to load' },
         });
-        loaderPromptSelect.addEventListener('change', renderLoaderVersions);
+        loaderPromptSelect.addEventListener('change', () => renderLoaderVersions());
         loaderVersionSelect = element('select', {
             className: 'text_pole sbpl-select',
             attributes: { 'aria-label': 'Draft version to load' },
@@ -445,6 +521,22 @@ export function createExperimentTab() {
         const sendControls = element('div', { className: 'sbpl-controls' });
         sendControls.append(profileSelect, tokensInput, runButton, cancelButton);
 
+        runInputs = [
+            promptATextarea,
+            promptBTextarea,
+            copyDown,
+            loaderPromptSelect,
+            loaderVersionSelect,
+            loadA,
+            loadB,
+            roleSelect,
+            characterSelect,
+            greetingSelect,
+            scenarioTextarea,
+            profileSelect,
+            tokensInput,
+        ];
+
         status = statusRegion('');
         output = element('div', { className: 'sbpl-ab-output' });
         analysisHost = element('div', { className: 'sbpl-analysis-host' });
@@ -452,7 +544,7 @@ export function createExperimentTab() {
         root.append(
             element('p', {
                 className: 'sbpl-settings-note',
-                text: 'Test a prompt against a modified version of it. Both are sent through the same connection with the same character card and test message, so any difference in the replies points at your change. Like Compare models, this uses tokens when you ask for replies.',
+                text: 'Test a prompt against a modified version of it. Both are sent through the same connection with the same character card and test message. The replies are independent stochastic samples, so a difference can suggest an effect but cannot prove your prompt change caused it. Like Compare models, this uses tokens when you ask for replies.',
             }),
             promptPair,
             loader,
@@ -472,6 +564,7 @@ export function createExperimentTab() {
             output,
             analysisHost,
         );
+        updateControls();
         return root;
     }
 
@@ -479,9 +572,9 @@ export function createExperimentTab() {
         render() {
             if (!root) {
                 build();
-                void reload().catch((error) => {
-                    status.textContent = `Saved prompts could not be loaded: ${errorMessage(error)}`;
-                });
+                startReload();
+            } else if (!controller) {
+                tokensInput.value = String(getSettings().abMaxTokens);
             }
             if (!lastResult) {
                 replace(output, emptyState(
@@ -492,10 +585,19 @@ export function createExperimentTab() {
             return root;
         },
         refresh() {
-            void reload().catch(() => {});
+            if (root) {
+                if (!controller) {
+                    tokensInput.value = String(getSettings().abMaxTokens);
+                }
+                startReload();
+            }
         },
         dispose() {
+            reloadEpoch += 1;
+            actionEpoch += 1;
             controller?.abort();
+            controller = null;
+            stopAnalysis();
             root?.remove();
             root = null;
         },

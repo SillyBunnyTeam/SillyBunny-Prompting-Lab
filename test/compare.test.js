@@ -80,9 +80,14 @@ test('normalizeVolatile masks the parts that change every run', () => {
     assert.equal(masked, 'Rolled a ⟨macro:roll⟩ today');
 });
 
-test('normalizeVolatile treats an unanchored span as the whole section', () => {
-    const masked = normalizeVolatile('abcabc', [{ text: 'a' }, { text: 'abc' }]);
+test('normalizeVolatile only masks one unambiguous observed literal', () => {
+    const masked = normalizeVolatile('abcabc', [{ text: 'abcabc', otherText: 'xyz' }]);
     assert.equal(masked, '⟨changes each time⟩');
+    assert.equal(
+        normalizeVolatile('prefix abcabc stable', [{ text: 'abcabc', otherText: 'xyz' }]),
+        'prefix ⟨changes each time⟩ stable',
+    );
+    assert.equal(normalizeVolatile('abc abc', [{ text: 'abc', otherText: 'xyz' }]), 'abc abc');
 });
 
 test('normalizeVolatile leaves a malformed empty span alone', () => {
@@ -107,7 +112,7 @@ test('normalizeVolatile leaves text alone when there is nothing to mask', () => 
 test('a random value does not report itself as a regression', () => {
     const before = runWith([{ id: 'main', content: 'Today you rolled 3.', tokens: 6 }]);
     const after = runWith([{ id: 'main', content: 'Today you rolled 7.', tokens: 6 }]);
-    const spans = [{ text: '3' }, { text: '7' }];
+    const spans = findVolatileSpans(before, after);
 
     const normalized = compareRuns(after, before, { volatileSpans: spans, normalize: true });
     assert.equal(normalized.identical, true, 'a value that always changes must not count as a change');
@@ -197,14 +202,14 @@ test('a volatile value is masked by the unchanged text around it', () => {
     assert.match(a, /Lucky number: ⟨changes each time⟩/);
 });
 
-test('leading and trailing anchored values normalize unseen values', () => {
+test('one-sided anchors are not broad enough to mask safely', () => {
     const trailing = [{ text: 'old', anchorBefore: 'Roll: ' }];
-    assert.equal(
+    assert.notEqual(
         normalizeVolatile('Roll: 903', trailing),
         normalizeVolatile('Roll: 41', trailing),
     );
     const leading = [{ text: 'old', anchorAfter: ' is the result.' }];
-    assert.equal(
+    assert.notEqual(
         normalizeVolatile('903 is the result.', leading),
         normalizeVolatile('41 is the result.', leading),
     );
@@ -212,18 +217,34 @@ test('leading and trailing anchored values normalize unseen values', () => {
 
 test('volatile spans are scoped to their section during comparison', () => {
     const before = runWith([
-        { id: 'main', content: 'Roll: 3', tokens: 2 },
+        { id: 'main', content: 'Roll: 3 done', tokens: 2 },
         { id: 'chatHistory', content: 'stable', tokens: 1 },
     ]);
     const after = runWith([
-        { id: 'main', content: 'Roll: 7', tokens: 2 },
+        { id: 'main', content: 'Roll: 7 done', tokens: 2 },
         { id: 'chatHistory', content: 'edited', tokens: 1 },
     ]);
     const result = compareRuns(after, before, {
-        volatileSpans: [{ section: 'main', text: '3', otherText: '7' }],
+        volatileSpans: [{
+            section: 'main',
+            text: '3',
+            otherText: '7',
+            anchorBefore: 'Roll: ',
+            anchorAfter: ' done',
+        }],
         normalize: true,
     });
     assert.deepEqual(result.changedSections, ['chatHistory']);
+});
+
+test('a one-sided volatile span cannot hide stable text appended at the edge', () => {
+    const before = runWith([{ id: 'main', content: 'Roll: 3', tokens: 2 }]);
+    const after = runWith([{ id: 'main', content: 'Roll: 7. Stable edit.', tokens: 5 }]);
+    const result = compareRuns(after, before, {
+        volatileSpans: [{ section: 'main', text: '3', otherText: '7', anchorBefore: 'Roll: ' }],
+        normalize: true,
+    });
+    assert.deepEqual(result.changedSections, ['main']);
 });
 
 test('anchored masking still leaves a genuine edit visible', () => {
@@ -255,4 +276,98 @@ test('findVolatileSpans records the unchanged text around the value', () => {
     assert.equal(span.text, '215');
     assert.match(span.anchorBefore, /Lucky number: $/);
     assert.match(span.anchorAfter, /^\. Be kind\./);
+});
+
+test('multiple disjoint differences are never collapsed into one volatile span', () => {
+    const first = { capture: { sections: [{ id: 'main', content: 'Roll 3. Be kind.', tokens: 5 }] } };
+    const second = { capture: { sections: [{ id: 'main', content: 'Roll 7. Be cruel.', tokens: 5 }] } };
+    assert.deepEqual(findVolatileSpans(first, second), []);
+});
+
+test('differences in two sections are not guessed to be one volatile change', () => {
+    const first = runWith([
+        { id: 'main', content: 'Roll 3.', tokens: 2 },
+        { id: 'chatHistory', content: 'Time 10.', tokens: 2 },
+    ]);
+    const second = runWith([
+        { id: 'main', content: 'Roll 7.', tokens: 2 },
+        { id: 'chatHistory', content: 'Time 11.', tokens: 2 },
+    ]);
+    assert.deepEqual(findVolatileSpans(first, second), []);
+});
+
+test('duplicate section occurrences are compared in order without collapsing', () => {
+    const before = runWith([
+        { id: 'main', content: 'first', tokens: 1 },
+        { id: 'main', content: 'second', tokens: 2 },
+    ]);
+    const after = runWith([
+        { id: 'main', content: 'edited', tokens: 3 },
+        { id: 'main', content: 'second', tokens: 2 },
+    ]);
+    const result = compareRuns(after, before);
+    assert.deepEqual(result.changedSections, ['main']);
+    assert.equal(result.tokenDeltas.length, 2);
+    assert.deepEqual(result.tokenDeltas.map(item => item.occurrence), [0, 1]);
+});
+
+test('volatile spans are scoped to one duplicate section occurrence', () => {
+    const calibrationA = runWith([
+        { id: 'main', content: 'Roll: 3 done', tokens: 2 },
+        { id: 'main', content: 'Keep this stable.', tokens: 2 },
+    ]);
+    const calibrationB = runWith([
+        { id: 'main', content: 'Roll: 7 done', tokens: 2 },
+        { id: 'main', content: 'Keep this stable.', tokens: 2 },
+    ]);
+    const spans = findVolatileSpans(calibrationA, calibrationB);
+    assert.equal(spans[0].occurrence, 0);
+
+    const current = runWith([
+        { id: 'main', content: 'Roll: 9 done', tokens: 2 },
+        { id: 'main', content: 'Edited stable text.', tokens: 3 },
+    ]);
+    assert.deepEqual(
+        compareRuns(current, calibrationA, { volatileSpans: spans }).changedSections,
+        ['main'],
+    );
+});
+
+test('canonical outbound identity preserves protocol fields and ignores object key order', () => {
+    const sections = [{ id: 'main', content: 'same', tokens: 1 }];
+    const before = runWith(sections);
+    before.capture.messages = [{ content: '', role: 'assistant', tool_calls: [{ id: 'call-1' }] }];
+    const same = runWith(sections);
+    same.capture.messages = [{ tool_calls: [{ id: 'call-1' }], role: 'assistant', content: '' }];
+    assert.equal(compareRuns(same, before).identical, true);
+
+    const changed = structuredClone(same);
+    changed.capture.messages[0].tool_calls[0].id = 'call-2';
+    const result = compareRuns(changed, before);
+    assert.equal(result.identical, false);
+    assert.equal(result.outboundChanged, true);
+});
+
+test('canonical outbound identity preserves message order and duplicates', () => {
+    const sections = [{ id: 'main', content: 'same', tokens: 1 }];
+    const before = runWith(sections);
+    before.capture.messages = [
+        { role: 'user', content: 'same' },
+        { role: 'user', content: 'same' },
+        { role: 'assistant', content: 'reply' },
+    ];
+    const after = structuredClone(before);
+    after.capture.messages.reverse();
+    assert.equal(compareRuns(after, before).identical, false);
+});
+
+test('canonical outbound identity falls back to the final combined prompt', () => {
+    const sections = [{ id: 'main', content: 'same section metric', tokens: 1 }];
+    const before = runWith(sections);
+    const after = runWith(sections);
+    before.capture.combinedPrompt = 'final before';
+    after.capture.combinedPrompt = 'final after';
+    const result = compareRuns(after, before);
+    assert.equal(result.outboundChanged, true);
+    assert.equal(result.identical, false);
 });

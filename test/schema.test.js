@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ASSERTION, CASE_VERSION, MAX_REGEX_LENGTH, STATUS } from '../src/constants.js';
+import { ASSERTION, CASE_VERSION, MAX_REGEX_LENGTH, RUN_VERSION, STATUS } from '../src/constants.js';
 import {
     createCase,
     createSuite,
@@ -113,6 +113,39 @@ test('regex assertions are bounded before validation or evaluation', () => {
     assert.match(problems[0], /too long/);
 });
 
+test('regex assertions are rejected when deadline Worker execution is unavailable', () => {
+    for (const value of [
+        'a+$',
+        '(a+)+$',
+        '(a|aa)+$',
+        '(a+)\\1',
+        'a*a*b',
+        '^a{50000}$',
+        '^a{1,3}b{1,3}$',
+        '^a{0,50000}a{0,50000}b$',
+    ]) {
+        assert.match(validateAssertion({ type: ASSERTION.CONTENT_MATCH, mode: 'regex', value })[0], /safe deadline/);
+    }
+});
+
+test('regex validation accepts patterns when deadline Worker execution is available', () => {
+    const previous = globalThis.Worker;
+    globalThis.Worker = class {};
+    try {
+        assert.deepEqual(validateAssertion({
+            type: ASSERTION.CONTENT_MATCH,
+            mode: 'regex',
+            value: 'a+$',
+        }), []);
+    } finally {
+        if (previous === undefined) {
+            delete globalThis.Worker;
+        } else {
+            globalThis.Worker = previous;
+        }
+    }
+});
+
 test('validateCase reports missing name, character and bad checks', () => {
     const problems = validateCase({
         name: '   ',
@@ -208,6 +241,18 @@ test('normalizeRun preserves unchecked results and sanitizes volatile spans', ()
     assert.equal(run.cache.volatileSpans[0].anchorAfter.length, 24);
 });
 
+test('legacy pass and changed runs with missing checks migrate to unchecked', () => {
+    for (const status of [STATUS.PASS, STATUS.CHANGED]) {
+        const run = migrateRun({
+            v: RUN_VERSION - 1,
+            status,
+            assertionResults: [{ pass: null }],
+        });
+        assert.equal(run.v, RUN_VERSION);
+        assert.equal(run.status, STATUS.UNCHECKED);
+    }
+});
+
 test('resolveStatus ranks failures above differences', () => {
     assert.equal(resolveStatus({ error: new Error('boom') }), STATUS.ERROR);
     assert.equal(
@@ -217,6 +262,10 @@ test('resolveStatus ranks failures above differences', () => {
     assert.equal(
         resolveStatus({ assertionResults: [{ pass: true }], hasBaseline: true, diffIsEmpty: false }),
         STATUS.CHANGED,
+    );
+    assert.equal(
+        resolveStatus({ assertionResults: [{ pass: null }], hasBaseline: true, diffIsEmpty: false }),
+        STATUS.UNCHECKED,
     );
     assert.equal(resolveStatus({ hasBaseline: true, diffIsEmpty: true }), STATUS.PASS);
     assert.equal(resolveStatus({ hasBaseline: false, diffIsEmpty: false }), STATUS.PASS);

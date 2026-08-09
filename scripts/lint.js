@@ -2,8 +2,9 @@ import { readdir, readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
-const root = path.resolve(import.meta.dirname, '..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ignored = new Set(['.git', 'node_modules', 'playwright-report', 'test-results']);
 const checkedExtensions = new Set(['.css', '.html', '.js', '.json', '.md', '.yml', '.yaml']);
 const errors = [];

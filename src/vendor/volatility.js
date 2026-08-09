@@ -82,8 +82,16 @@ export const KNOWN_CLASSES = new Map([
     // Macro Enhanced periodic-by-design
     ...['timeofday', 'season', 'daily', 'sticky', 'chatdays', 'usermsgcount', 'charmsgcount', 'swipecount', 'gencount']
         .map(name => [name, CLASS_PERIODIC]),
+    // Pronoun overrides write chat state, so they carry the same risk as any
+    // other write: what a later read returns depends on when this last ran.
+    ...['setpronouns', 'setcharpronouns'].map(name => [name, CLASS_STATE]),
     // deterministic
     ...['pick', 'freeze', 'rollonce', 'listpick', 'lorepick'].map(name => [name, CLASS_STABLE]),
+    // Pronoun readers: fixed for a given persona and card, so they re-send
+    // byte-identical text every generation.
+    ...['sub', 'obj', 'poss', 'poss_p', 'ref', 'pronouns', 'pverb',
+        'charsub', 'charobj', 'charposs', 'charposs_p', 'charref', 'charpronouns', 'charpverb']
+        .map(name => [name, CLASS_STABLE]),
 ]);
 
 /** Matches macro names at any nesting depth, past any flags ({{!time}}, {{? x}}). */

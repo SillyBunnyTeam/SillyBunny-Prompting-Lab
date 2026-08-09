@@ -1,5 +1,6 @@
 import { CAVEAT, SECTION_LABEL } from './constants.js';
 import { countTokens, ctxOf, displayTokenCounts, getContext } from './host.js';
+import { canonicalOutbound, contentToText, messagesToText } from './message-content.js';
 
 /**
  * Captures the prompt SillyBunny would send, without sending it.
@@ -27,6 +28,8 @@ const TC_SECTION_KEYS = [
     'naiPreamble',
 ];
 
+let captureActive = false;
+
 function sectionLabel(id) {
     return SECTION_LABEL[id] ?? id;
 }
@@ -48,16 +51,8 @@ function cloneMessages(messages) {
     if (!Array.isArray(messages)) {
         return null;
     }
-    return messages
-        .filter(message => message && typeof message === 'object')
-        .map(message => ({
-            role: String(message.role ?? ''),
-            content: typeof message.content === 'string'
-                ? message.content
-                : safeClone(message.content),
-            ...(message.name ? { name: String(message.name) } : {}),
-            ...(message.tool_calls ? { tool_calls: safeClone(message.tool_calls) } : {}),
-        }));
+    const cloned = safeClone(messages);
+    return Array.isArray(cloned) ? cloned : null;
 }
 
 /**
@@ -124,11 +119,11 @@ function nodeText(node) {
     }
     if (typeof node.flatten === 'function' && Array.isArray(node.collection)) {
         return node.flatten()
-            .map(message => (typeof message?.content === 'string' ? message.content : ''))
+            .map(message => contentToText(message?.content))
             .filter(Boolean)
             .join('\n');
     }
-    return typeof node.content === 'string' ? node.content : '';
+    return contentToText(node.content);
 }
 
 /**
@@ -166,7 +161,7 @@ export function readChatCompletionSections(host, promptManager) {
 
     const perSection = {};
     for (const section of sections) {
-        perSection[section.id] = section.tokens;
+        perSection[section.id] = Number(perSection[section.id] ?? 0) + section.tokens;
     }
     return { sections, tokenTable: { total, perSection } };
 }
@@ -207,7 +202,7 @@ export async function readTextCompletionSections(beforeCombine, finalPrompt = nu
 
     const perSection = {};
     for (const section of sections) {
-        perSection[section.id] = section.tokens;
+        perSection[section.id] = Number(perSection[section.id] ?? 0) + section.tokens;
     }
     let totalCounted = null;
     if (typeof finalPrompt === 'string') {
@@ -223,15 +218,238 @@ export async function readTextCompletionSections(beforeCombine, finalPrompt = nu
     return { sections, tokenTable: { total, perSection }, estimated };
 }
 
+function dispatchInput(textarea) {
+    const EventConstructor = textarea?.ownerDocument?.defaultView?.Event ?? globalThis.Event;
+    if (typeof textarea?.dispatchEvent === 'function' && typeof EventConstructor === 'function') {
+        textarea.dispatchEvent(new EventConstructor('input', { bubbles: true }));
+    }
+}
+
+async function withClearedTextarea(run) {
+    const textarea = globalThis.document?.querySelector?.('#send_textarea') ?? null;
+    if (!textarea || typeof textarea.value !== 'string') {
+        return run();
+    }
+    const original = textarea.value;
+    const originalReadOnly = textarea.readOnly;
+    const selection = Number.isInteger(textarea.selectionStart) && Number.isInteger(textarea.selectionEnd)
+        ? [textarea.selectionStart, textarea.selectionEnd, textarea.selectionDirection]
+        : null;
+    textarea.readOnly = true;
+    try {
+        textarea.value = '';
+        dispatchInput(textarea);
+        return await run();
+    } finally {
+        let restored = false;
+        try {
+            if (textarea.value === '') {
+                textarea.value = original;
+                restored = true;
+            }
+        } finally {
+            textarea.readOnly = originalReadOnly;
+        }
+        if (restored) {
+            try {
+                textarea.setSelectionRange?.(...selection);
+            } catch {
+                // Selection restoration is best-effort on host textarea stand-ins.
+            }
+            dispatchInput(textarea);
+        }
+    }
+}
+
+async function beginGenerationIsolation(context, ownedSignal) {
+    if (captureActive) {
+        throw new Error('Prompting Lab is already building a prompt. Wait for it to finish and try again.');
+    }
+    captureActive = true;
+
+    // Unit tests have no page or competing send controls. The real host always
+    // has document.body, so missing host locking APIs there must fail closed.
+    if (!globalThis.document?.body) {
+        return {
+            overlapped: () => false,
+            release() { captureActive = false; },
+        };
+    }
+
+    try {
+        const source = context?.eventSource;
+        const started = context?.eventTypes?.GENERATION_STARTED;
+        const afterCommands = context?.eventTypes?.GENERATION_AFTER_COMMANDS;
+        if (!started
+            || !afterCommands
+            || typeof source?.makeFirst !== 'function'
+            || typeof source?.removeListener !== 'function'
+            || typeof context?.deactivateSendButtons !== 'function'
+            || typeof context?.activateSendButtons !== 'function') {
+            throw new Error('Prompting Lab cannot safely isolate its test message because this SillyBunny build does not expose the generation lock APIs.');
+        }
+        if (context.streamingProcessor
+            || globalThis.document.body.dataset?.generating === 'true') {
+            throw new Error('A SillyBunny generation is already running. Stop it before building a test prompt.');
+        }
+
+        let unblock;
+        const blocked = new Promise(resolve => { unblock = resolve; });
+        let overlapped = false;
+        const guard = (_type, options, dryRun) => {
+            if (dryRun === true && options?.signal === ownedSignal) {
+                return undefined;
+            }
+            overlapped = true;
+            return blocked;
+        };
+        for (const eventType of [started, afterCommands]) {
+            source.makeFirst(eventType, guard);
+        }
+        try {
+            context.deactivateSendButtons();
+        } catch (error) {
+            for (const eventType of [started, afterCommands]) {
+                source.removeListener(eventType, guard);
+            }
+            throw error;
+        }
+
+        let released = false;
+        return {
+            overlapped: () => overlapped,
+            release() {
+                if (released) {
+                    return;
+                }
+                released = true;
+                for (const eventType of [started, afterCommands]) {
+                    source.removeListener(eventType, guard);
+                }
+                try {
+                    context.activateSendButtons({ emitGenerationEnded: false });
+                } finally {
+                    captureActive = false;
+                    unblock();
+                }
+            },
+        };
+    } catch (error) {
+        captureActive = false;
+        throw error;
+    }
+}
+
+function mutableMacroState(context) {
+    const slots = [];
+    const remember = (parent, key, store) => {
+        if (!parent || typeof parent !== 'object') {
+            return;
+        }
+        const exists = Object.hasOwn(parent, key);
+        slots.push({ parent, key, store, exists, value: exists ? safeClone(parent[key]) : undefined });
+    };
+    remember(context?.chatMetadata, 'variables', 'metadata');
+    remember(context?.chatMetadata, 'MacroEnhanced', 'metadata');
+    if (context?.extensionSettings?.variables && typeof context.extensionSettings.variables === 'object') {
+        remember(context.extensionSettings.variables, 'global', 'settings');
+    } else {
+        remember(context?.extensionSettings, 'variables', 'settings');
+    }
+    return slots;
+}
+
+function restoreMutableState(slots) {
+    const changed = { metadata: false, settings: false };
+    for (const { parent, key, store, exists, value } of slots) {
+        const currentExists = Object.hasOwn(parent, key);
+        let same = currentExists === exists;
+        if (same && exists) {
+            try {
+                same = JSON.stringify(parent[key]) === JSON.stringify(value);
+            } catch {
+                same = false;
+            }
+        }
+        changed[store] ||= !same;
+        if (exists) {
+            parent[key] = value;
+        } else {
+            delete parent[key];
+        }
+    }
+    return changed;
+}
+
+async function persistMutableState(context, changed) {
+    let persisted = true;
+    if (changed.metadata) {
+        if (typeof context?.saveMetadata === 'function') {
+            try {
+                const confirmed = await context.saveMetadata();
+                if (confirmed !== true) {
+                    // Current SillyBunny catches metadata save failures and
+                    // returns no status, so completion alone is not proof.
+                    persisted = false;
+                }
+            } catch {
+                persisted = false;
+            }
+        } else {
+            persisted = false;
+        }
+    }
+    if (changed.settings) {
+        if (typeof context?.saveSettings === 'function') {
+            try {
+                await context.saveSettings();
+            } catch {
+                persisted = false;
+            }
+        } else if (typeof context?.saveSettingsDebounced === 'function') {
+            try {
+                context.saveSettingsDebounced();
+            } finally {
+                // The extension context exposes no completion/error signal for
+                // this queued save, so persistence cannot be certified.
+                persisted = false;
+            }
+        } else {
+            persisted = false;
+        }
+    }
+    return persisted;
+}
+
+/** Mirrors the host's current Message -> outbound object conversion for metrics. */
+function promptManagerOutboundMessages(promptManager) {
+    const flat = promptManager?.messages?.flatten?.();
+    if (!Array.isArray(flat) || flat.some(message => message && !message.role)) {
+        return null;
+    }
+    return flat
+        .filter(message => message && (message.content || message.tool_calls))
+        .map(message => ({
+            role: message.role,
+            content: safeClone(message.content),
+            ...(message.name ? { name: message.name } : {}),
+            ...(message.tool_calls ? { tool_calls: safeClone(message.tool_calls) } : {}),
+            ...(message.role === 'tool' ? { tool_call_id: message.identifier } : {}),
+            ...(message.signature ? { signature: message.signature } : {}),
+            ...(message.reasoning ? { reasoning: message.reasoning } : {}),
+        }));
+}
+
 /**
  * Listens for one prompt assembly. Listeners are attached only for the length
  * of a capture, so a user's own generations are never observed.
  */
-export function createCaptureSession(hostRef = getContext) {
+export function createCaptureSession(hostRef = getContext, ownedSignal = null) {
     const context = ctxOf(hostRef);
     const source = context?.eventSource;
     const events = context?.eventTypes;
     const attached = [];
+    let ownedGeneration = null;
 
     const state = {
         started: false,
@@ -259,16 +477,25 @@ export function createCaptureSession(hostRef = getContext) {
         attached.push({ eventType, handler });
     }
 
-    const onGenerationStarted = (_type, _options, dryRun) => {
+    const onGenerationStarted = (type, options, dryRun) => {
+        if (dryRun !== true || options?.signal !== ownedSignal) {
+            ownedGeneration = false;
+            return;
+        }
+        ownedGeneration = true;
         state.started = true;
         state.dryRun = Boolean(dryRun);
+        state.cacheScope = options?.cacheScope ?? (type === 'quiet' ? 'auxiliary' : 'main');
     };
 
     const onAfterData = (generateData, dryRun) => {
+        if (ownedGeneration === false) {
+            return;
+        }
         if (dryRun !== undefined) {
             state.dryRun = Boolean(dryRun);
         }
-        state.cacheScope = generateData?.cacheScope ?? null;
+        state.cacheScope = generateData?.cacheScope ?? state.cacheScope;
         if (typeof generateData?.use_sysprompt === 'boolean') {
             state.useSysPrompt = generateData.use_sysprompt;
         }
@@ -297,10 +524,16 @@ export function createCaptureSession(hostRef = getContext) {
     };
 
     const onChatCompletionReady = (data) => {
+        if (ownedGeneration === false) {
+            return;
+        }
         state.ccMessages = cloneMessages(data?.chat);
     };
 
     const onBeforeCombine = (data) => {
+        if (ownedGeneration === false) {
+            return;
+        }
         // The negative-prompt pass for CFG re-emits this event with no dry-run
         // flag of its own. Only the first pass is the prompt being measured.
         if (state.beforeCombine) {
@@ -316,12 +549,18 @@ export function createCaptureSession(hostRef = getContext) {
     };
 
     const onAfterCombine = (data) => {
+        if (ownedGeneration === false) {
+            return;
+        }
         if (typeof data?.prompt === 'string' && state.combinedPrompt === null) {
             state.combinedPrompt = data.prompt;
         }
     };
 
     const onWorldInfoScanDone = (payload) => {
+        if (ownedGeneration === false) {
+            return;
+        }
         // An empty pass is still a pass: a scan that activated nothing is a
         // definite answer, not a missing measurement. Dropping it would make
         // "entry activates" checks unanswerable instead of failed.
@@ -331,6 +570,7 @@ export function createCaptureSession(hostRef = getContext) {
     return {
         attach() {
             listen(events?.GENERATION_STARTED, onGenerationStarted);
+            listen(events?.GENERATION_AFTER_COMMANDS, onGenerationStarted);
             listen(events?.GENERATE_AFTER_DATA, onAfterData);
             listen(events?.CHAT_COMPLETION_PROMPT_READY, onChatCompletionReady);
             listen(events?.GENERATE_BEFORE_COMBINE_PROMPTS, onBeforeCombine);
@@ -408,9 +648,10 @@ export async function withTransientMessages(hostRef, entries, run) {
  * Runs one dry-run assembly and returns everything observed.
  * @returns {Promise<object>} capture result with sections, tokens and caveats.
  */
-export async function captureOnce({ userMessage = '', scene = null, context = getContext, host = null } = {}) {
+export async function captureOnce({ userMessage = '', scene = null, context = getContext, host = null, signal = null } = {}) {
     const hostRef = context;
-    if (typeof ctxOf(hostRef)?.generate !== 'function') {
+    const initial = ctxOf(hostRef);
+    if (typeof initial?.generate !== 'function') {
         throw new Error('Prompting Lab cannot build a prompt because SillyBunny\'s generate function is unavailable. Reload SillyBunny and try again.');
     }
 
@@ -420,61 +661,154 @@ export async function captureOnce({ userMessage = '', scene = null, context = ge
         ? scene
         : [{ role: 'user', text: userMessage }];
 
-    const session = createCaptureSession(hostRef);
-    session.attach();
-    try {
-        await withTransientMessages(
-            hostRef,
-            entries,
-            () => ctxOf(hostRef).generate('normal', {}, true),
-        );
-    } finally {
-        session.detach();
+    const captureController = new AbortController();
+    const relayAbort = () => captureController.abort(signal?.reason);
+    if (signal?.aborted) {
+        relayAbort();
+    } else {
+        signal?.addEventListener?.('abort', relayAbort, { once: true });
     }
 
-    const state = session.getState();
-    const caveats = [CAVEAT.NO_INTERCEPTORS];
-    // Read after assembly: a connection profile may have changed the API, and
-    // the context copies mainApi by value.
-    const live = ctxOf(hostRef);
-    const apiType = live.mainApi === 'openai' ? 'cc' : 'tc';
+    let isolation = null;
+    let session = null;
+    let macroState = null;
+    let result = null;
+    let localMacroStateRestored = false;
+    let macroRollbackPersisted = true;
+    try {
+        isolation = await beginGenerationIsolation(initial, captureController.signal);
+        session = createCaptureSession(hostRef, captureController.signal);
+        macroState = mutableMacroState(initial);
+        session.attach();
+        await withClearedTextarea(() => withTransientMessages(
+            hostRef,
+            entries,
+            () => ctxOf(hostRef).generate('normal', { signal: captureController.signal }, true),
+        ));
+        if (isolation.overlapped()) {
+            throw new Error('Another SillyBunny generation overlapped this prompt build. The test capture was discarded before that generation continued.');
+        }
 
-    const messages = state.ccMessages ?? state.generateData?.messages ?? null;
-    const combinedPrompt = state.combinedPrompt ?? state.generateData?.prompt ?? null;
+        const state = session.getState();
+        const caveats = [
+            CAVEAT.NO_INTERCEPTORS,
+            CAVEAT.LIVE_CHAT_DRY_RUN,
+            CAVEAT.MACRO_SANDBOX_UNAVAILABLE,
+        ];
+        // Read after assembly: a connection profile may have changed the API,
+        // and the context copies mainApi by value.
+        const live = ctxOf(hostRef);
+        const apiType = live.mainApi === 'openai' ? 'cc' : 'tc';
 
-    let sections = [];
-    let tokenTable = { total: 0, perSection: {} };
+        const messages = state.ccMessages ?? state.generateData?.messages ?? null;
+        const combinedPrompt = state.generateData?.prompt ?? state.combinedPrompt ?? null;
 
-    if (apiType === 'cc') {
-        const read = readChatCompletionSections(host, live.promptManager);
-        sections = read.sections;
-        tokenTable = read.tokenTable;
-    } else {
-        const read = await readTextCompletionSections(state.beforeCombine, combinedPrompt);
-        sections = read.sections;
-        tokenTable = read.tokenTable;
-        if (read.estimated) {
-            caveats.push(CAVEAT.TOKENIZER_FALLBACK);
+        let sections = [];
+        let tokenTable = { total: 0, perSection: {} };
+        let metricsComplete = true;
+
+        if (apiType === 'cc') {
+            const read = readChatCompletionSections(host, live.promptManager);
+            sections = read.sections;
+            tokenTable = read.tokenTable;
+            const assembledMessages = promptManagerOutboundMessages(live.promptManager);
+            let sectionMetricsMatch = false;
+            try {
+                sectionMetricsMatch = canonicalOutbound({ messages: assembledMessages })
+                    === canonicalOutbound({ messages });
+            } catch {
+                sectionMetricsMatch = false;
+            }
+            if (!sectionMetricsMatch) {
+                metricsComplete = false;
+                caveats.push(CAVEAT.FINAL_METRICS_INCOMPLETE);
+                const content = messagesToText(messages);
+                if (content) {
+                    sections.push({
+                        id: 'finalInterceptors',
+                        label: sectionLabel('finalInterceptors'),
+                        content,
+                        tokens: 0,
+                    });
+                    tokenTable.perSection.finalInterceptors = 0;
+                }
+            }
+        } else {
+            const read = await readTextCompletionSections(state.beforeCombine, combinedPrompt);
+            sections = read.sections;
+            tokenTable = read.tokenTable;
+            if (read.estimated) {
+                caveats.push(CAVEAT.TOKENIZER_FALLBACK);
+            }
+        }
+        tokenTable.metricsComplete = metricsComplete;
+
+        if (!(Array.isArray(messages) && messages.length)
+            && !(typeof combinedPrompt === 'string' && combinedPrompt.length)) {
+            throw new Error('Prompting Lab did not receive a prompt from SillyBunny. Check that a character is selected and that the connection settings are complete.');
+        }
+
+        result = {
+            apiType,
+            messages,
+            combinedPrompt,
+            sections,
+            tokenTable,
+            wiPasses: state.wiPasses,
+            cacheScope: state.cacheScope ?? 'main',
+            sourceTexts: collectSourceTexts(live),
+            caveats,
+            metricsComplete,
+            capabilities: {
+                finalPromptExact: false,
+                syntheticMessagesIsolated: false,
+                macroStateSandboxed: false,
+                localMacroStateRestored: false,
+                macroRollbackPersisted: false,
+            },
+            // GENERATE_AFTER_DATA has omitted metadata on older hosts. These
+            // live values are authoritative after profile application.
+            useSysPrompt: state.useSysPrompt
+                ?? live?.chatCompletionSettings?.use_sysprompt
+                ?? true,
+            useTools: state.useTools
+                ?? live?.isToolCallingSupported?.()
+                ?? true,
+            prefillString: state.prefillString
+                || String(live?.chatCompletionSettings?.assistant_prefill ?? ''),
+            promptNames: state.promptNames ?? {
+                charName: String(live?.name2 ?? ''),
+                userName: String(live?.name1 ?? ''),
+                groupNames: [],
+            },
+        };
+    } finally {
+        try {
+            if (macroState) {
+                const changed = restoreMutableState(macroState);
+                localMacroStateRestored = true;
+                macroRollbackPersisted = await persistMutableState(initial, changed);
+            }
+        } finally {
+            try {
+                session?.detach();
+            } finally {
+                try {
+                    isolation?.release();
+                } finally {
+                    signal?.removeEventListener?.('abort', relayAbort);
+                }
+            }
         }
     }
 
-    if (!messages && !combinedPrompt) {
-        throw new Error('Prompting Lab did not receive a prompt from SillyBunny. Check that a character is selected and that the connection settings are complete.');
+    if (isolation?.overlapped()) {
+        throw new Error('Another SillyBunny generation overlapped this prompt build. The test capture was discarded before that generation continued.');
     }
-
-    return {
-        apiType,
-        messages,
-        combinedPrompt,
-        sections,
-        tokenTable,
-        wiPasses: state.wiPasses,
-        cacheScope: state.cacheScope,
-        useSysPrompt: state.useSysPrompt,
-        useTools: state.useTools,
-        prefillString: state.prefillString,
-        promptNames: state.promptNames,
-        sourceTexts: collectSourceTexts(live),
-        caveats,
-    };
+    if (!macroRollbackPersisted) {
+        result.caveats.push(CAVEAT.MACRO_ROLLBACK_UNCONFIRMED);
+    }
+    result.capabilities.localMacroStateRestored = localMacroStateRestored;
+    result.capabilities.macroRollbackPersisted = macroRollbackPersisted;
+    return result;
 }

@@ -1,10 +1,12 @@
+import { MAX_EXPORT_WITH_BASELINES_BYTES } from '../constants.js';
 import { button, element, errorMessage, field, replace, statusRegion } from '../dom.js';
 import { adoptEmbeddedCases, findCharactersWithTests, PRIVACY_NOTICE, readEmbeddedCases, writeEmbeddedCases, embeddedSize } from '../embed.js';
 import { getContext, readInstalledPreset } from '../host.js';
 import * as lab from '../lab.js';
+import { registerActiveTask } from '../operations.js';
 import { reviewConnectionFields, withoutFields } from '../presets.js';
 import { createDraft } from '../schema.js';
-import { getSettings, updateSettings } from '../settings.js';
+import { getSettings, isSettingsReadOnly, updateSettings } from '../settings.js';
 import * as storage from '../storage.js';
 import { buildExport, downloadExport, formatSize, parseImport, suggestedFileName } from '../transfer.js';
 
@@ -22,18 +24,30 @@ export function createSettingsTab({ onChanged = null } = {}) {
     let includeConnectionInput = null;
     let suites = [];
     let activeSuite = null;
+    let reloadEpoch = 0;
 
-    async function reload() {
-        suites = await storage.listSuites();
-        activeSuite = suites.find(suite => suite.id === activeSuite?.id) ?? suites[0] ?? null;
-        replace(suiteSelect, ...suites.map(suite => element('option', {
+    async function reload({ preferredSuiteId = '' } = {}) {
+        const epoch = ++reloadEpoch;
+        const suiteId = preferredSuiteId || activeSuite?.id;
+        const nextSuites = await storage.listSuites();
+        if (epoch !== reloadEpoch || !root) {
+            return;
+        }
+        const nextSuite = nextSuites.find(suite => suite.id === suiteId) ?? nextSuites[0] ?? null;
+        const cases = nextSuite ? await lab.getSuiteCases(nextSuite) : [];
+        if (epoch !== reloadEpoch || !root) {
+            return;
+        }
+        suites = nextSuites;
+        activeSuite = nextSuite;
+        replace(suiteSelect, ...nextSuites.map(suite => element('option', {
             text: suite.name,
             attributes: { value: suite.id },
         })));
         if (activeSuite) {
             suiteSelect.value = activeSuite.id;
         }
-        renderEmbedSection();
+        renderEmbedSection(cases);
     }
 
     async function exportSuite(includeBaselines) {
@@ -41,6 +55,9 @@ export function createSettingsTab({ onChanged = null } = {}) {
             status.textContent = 'Choose a suite to export.';
             return;
         }
+        const suite = structuredClone(activeSuite);
+        const includePresets = Boolean(includePresetsInput?.checked);
+        const includeConnection = includePresets && Boolean(includeConnectionInput?.checked);
         if (includeBaselines) {
             // Baseline runs hold the full built prompts. The card-embedding
             // path refuses to share captures outright; here the user decides,
@@ -54,20 +71,20 @@ export function createSettingsTab({ onChanged = null } = {}) {
             }
         }
         try {
-            const cases = await lab.getSuiteCases(activeSuite);
+            const cases = await lab.getSuiteCases(suite);
             let baselineRuns = null;
             if (includeBaselines) {
                 baselineRuns = [];
-                for (const runId of Object.values(activeSuite.baselines ?? {})) {
+                for (const runId of Object.values(suite.baselines ?? {})) {
                     const run = await storage.getRun(runId);
                     if (run) {
                         baselineRuns.push(run);
                     }
                 }
             }
-            const presets = await collectPresets(cases);
-            const { text, size, kind } = buildExport(activeSuite, cases, baselineRuns, presets);
-            downloadExport(suggestedFileName(activeSuite), text);
+            const presets = await collectPresets(cases, { includePresets, includeConnection });
+            const { text, size, kind } = buildExport(suite, cases, baselineRuns, presets);
+            downloadExport(suggestedFileName(suite), text);
             status.textContent = `Exported ${cases.length} test case${cases.length === 1 ? '' : 's'} (${formatSize(size)})${kind === 'suite-with-baselines' ? ', including baseline runs' : ''}${presets.length ? `, with ${presets.length} preset${presets.length === 1 ? '' : 's'}` : ''}.`;
         } catch (error) {
             status.textContent = `The suite could not be exported: ${errorMessage(error)}`;
@@ -79,8 +96,8 @@ export function createSettingsTab({ onChanged = null } = {}) {
      * Settings that say where requests go are left out unless the user asks
      * for them, because they point at someone's private setup.
      */
-    async function collectPresets(cases) {
-        if (!includePresetsInput?.checked) {
+    async function collectPresets(cases, { includePresets, includeConnection }) {
+        if (!includePresets) {
             return [];
         }
         const wanted = new Map();
@@ -99,7 +116,7 @@ export function createSettingsTab({ onChanged = null } = {}) {
             presets.push(createDraft({
                 apiId: ref.apiId,
                 name: ref.name,
-                payload: includeConnectionInput?.checked
+                payload: includeConnection
                     ? payload
                     : withoutFields(payload, fields.map(entry => entry.field)),
             }));
@@ -108,29 +125,26 @@ export function createSettingsTab({ onChanged = null } = {}) {
     }
 
     async function importFile(file) {
+        let task = null;
         try {
+            if (Number(file.size) > MAX_EXPORT_WITH_BASELINES_BYTES) {
+                throw new Error(`That file is ${formatSize(file.size)}, which is larger than the ${formatSize(MAX_EXPORT_WITH_BASELINES_BYTES)} import limit.`);
+            }
+            task = registerActiveTask('suite import');
             const text = await file.text();
             const { suite, cases, baselineRuns, presets } = parseImport(text);
-            for (const testCase of cases) {
-                await storage.saveCase(testCase);
-            }
-            for (const run of baselineRuns) {
-                await storage.saveRun(run);
-            }
-            for (const draft of presets) {
-                await storage.saveDraft(draft);
-            }
-            await storage.saveSuite(suite);
-            activeSuite = suite;
+            const imported = await storage.saveImportBatch({ suite, cases, baselineRuns, presets });
             status.textContent = `Imported "${suite.name}" with ${cases.length} test case${cases.length === 1 ? '' : 's'}${baselineRuns.length ? ' and its baseline runs' : ''}${presets.length ? `. Its ${presets.length} preset${presets.length === 1 ? ' is' : 's are'} waiting on the Presets tab, ready to publish` : ''}.`;
-            await reload();
+            await reload({ preferredSuiteId: imported.suite.id });
             onChanged?.();
         } catch (error) {
             status.textContent = `That file could not be imported: ${errorMessage(error)}`;
+        } finally {
+            task?.release();
         }
     }
 
-    function renderEmbedSection() {
+    function renderEmbedSection(suiteCases = []) {
         replace(embedHost);
         embedHost.append(element('p', { className: 'sbpl-field-label', text: 'Tests stored inside character cards' }));
         embedHost.append(element('p', { className: 'sbpl-settings-note', text: PRIVACY_NOTICE }));
@@ -149,17 +163,26 @@ export function createSettingsTab({ onChanged = null } = {}) {
                         status.textContent = 'Create a suite first.';
                         return;
                     }
-                    const adopted = adoptEmbeddedCases(readEmbeddedCases(context, carrier.avatar), carrier.avatar);
-                    for (const testCase of adopted) {
-                        await storage.saveCase(testCase);
+                    const suiteId = activeSuite.id;
+                    const adopted = adoptEmbeddedCases(
+                        readEmbeddedCases(context, carrier.avatar),
+                        carrier.avatar,
+                    );
+                    const task = registerActiveTask('embedded case adoption');
+                    try {
+                        for (const testCase of adopted) {
+                            await storage.saveCase(testCase);
+                        }
+                        await storage.updateSuite(suiteId, (suite) => {
+                            const ids = adopted.map(item2 => item2.id);
+                            suite.caseIds.push(...ids.filter(id => !suite.caseIds.includes(id)));
+                        });
+                        status.textContent = `Copied ${adopted.length} test case${adopted.length === 1 ? '' : 's'} from ${carrier.name}.`;
+                        await reload();
+                        onChanged?.();
+                    } finally {
+                        task.release();
                     }
-                    await storage.saveSuite({
-                        ...activeSuite,
-                        caseIds: [...activeSuite.caseIds, ...adopted.map(item2 => item2.id)],
-                    });
-                    status.textContent = `Copied ${adopted.length} test case${adopted.length === 1 ? '' : 's'} from ${carrier.name}.`;
-                    await reload();
-                    onChanged?.();
                 }, { className: 'menu_button sbpl-button' }));
                 list.append(item);
             }
@@ -171,32 +194,71 @@ export function createSettingsTab({ onChanged = null } = {}) {
             }));
         }
 
+        const avatars = [...new Set(suiteCases
+            .map(testCase => testCase.pins.characterAvatar)
+            .filter(Boolean))];
+        let characterSelect = null;
+        if (avatars.length > 1) {
+            const names = new Map((context.characters ?? []).map(character => [character.avatar, character.name]));
+            const nameCounts = new Map();
+            for (const avatar of avatars) {
+                const name = names.get(avatar) || avatar;
+                nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+            }
+            characterSelect = element('select', {
+                className: 'text_pole sbpl-select',
+                attributes: { 'aria-label': 'Character card to save this suite into' },
+            });
+            characterSelect.append(element('option', {
+                text: 'Choose a character card',
+                attributes: { value: '' },
+            }));
+            for (const avatar of avatars) {
+                const name = names.get(avatar) || avatar;
+                characterSelect.append(element('option', {
+                    text: nameCounts.get(name) > 1 ? `${name} (${avatar})` : name,
+                    attributes: { value: avatar },
+                }));
+            }
+            embedHost.append(field('Character card', characterSelect, {
+                hint: 'This suite uses several characters. Choose which card receives its own test cases.',
+            }));
+        }
+
         const saveInto = button('Save this suite into a character card', async () => {
             if (!activeSuite) {
                 status.textContent = 'Choose a suite first.';
                 return;
             }
-            const cases = await lab.getSuiteCases(activeSuite);
-            const avatar = cases.find(item => item.pins.characterAvatar)?.pins.characterAvatar;
+            const avatar = avatars.length === 1 ? avatars[0] : characterSelect?.value;
             if (!avatar) {
-                status.textContent = 'None of these test cases has a character, so there is no card to save them into.';
+                status.textContent = avatars.length
+                    ? 'Choose which character card to save into.'
+                    : 'None of these test cases has a character, so there is no card to save them into.';
                 return;
             }
-            const forCharacter = cases.filter(item => item.pins.characterAvatar === avatar);
+            const forCharacter = suiteCases
+                .filter(item => item.pins.characterAvatar === avatar)
+                .map(item => structuredClone(item));
             const size = embeddedSize(forCharacter);
+            const existing = readEmbeddedCases(context, avatar);
             const confirmed = globalThis.confirm?.(
-                `${PRIVACY_NOTICE}\n\n${forCharacter.length} test case${forCharacter.length === 1 ? '' : 's'} (${formatSize(size)}) will be saved into this card.\n\nSave them?`,
+                `${PRIVACY_NOTICE}\n\n${forCharacter.length} test case${forCharacter.length === 1 ? '' : 's'} (${formatSize(size)}) will be saved into this card. ${existing.length ? `They will replace the ${existing.length} test case${existing.length === 1 ? '' : 's'} already stored there.` : 'Any Prompting Lab test cases already stored there will be replaced.'}\n\nReplace the card's stored test cases?`,
             );
             if (!confirmed) {
                 status.textContent = 'Nothing was saved into the card.';
                 return;
             }
+            let task = null;
             try {
-                await writeEmbeddedCases(getContext(), avatar, forCharacter);
+                task = registerActiveTask('character card embedding');
+                await writeEmbeddedCases(context, avatar, forCharacter, { signal: task.signal });
                 status.textContent = `Saved ${forCharacter.length} test case${forCharacter.length === 1 ? '' : 's'} into the card.`;
-                renderEmbedSection();
+                renderEmbedSection(suiteCases);
             } catch (error) {
                 status.textContent = `They could not be saved into the card: ${errorMessage(error)}`;
+            } finally {
+                task?.release();
             }
         }, { className: 'menu_button sbpl-button' });
         embedHost.append(saveInto);
@@ -204,6 +266,7 @@ export function createSettingsTab({ onChanged = null } = {}) {
 
     function build() {
         root = element('div', { className: 'sbpl-settings-tab' });
+        const readOnly = isSettingsReadOnly();
         const settings = getSettings();
 
         const retention = element('input', {
@@ -211,6 +274,7 @@ export function createSettingsTab({ onChanged = null } = {}) {
             attributes: { type: 'number', min: '1', max: '200', step: '1' },
         });
         retention.value = String(settings.runRetention);
+        retention.disabled = readOnly;
         retention.addEventListener('change', () => {
             const next = updateSettings({ runRetention: Number(retention.value) });
             retention.value = String(next.runRetention);
@@ -222,6 +286,7 @@ export function createSettingsTab({ onChanged = null } = {}) {
             attributes: { type: 'number', min: '0', max: '20', step: '1', placeholder: 'Not set' },
         });
         depth.value = settings.manualCachingAtDepth === null ? '' : String(settings.manualCachingAtDepth);
+        depth.disabled = readOnly;
         depth.addEventListener('change', () => {
             const raw = depth.value.trim();
             const next = updateSettings({ manualCachingAtDepth: raw === '' ? null : Number(raw) });
@@ -232,9 +297,17 @@ export function createSettingsTab({ onChanged = null } = {}) {
         });
 
         suiteSelect = element('select', { className: 'text_pole sbpl-select', attributes: { 'aria-label': 'Suite' } });
-        suiteSelect.addEventListener('change', () => {
-            activeSuite = suites.find(suite => suite.id === suiteSelect.value) ?? null;
-            renderEmbedSection();
+        suiteSelect.addEventListener('change', async () => {
+            const suiteId = suiteSelect.value;
+            const suite = suites.find(item => item.id === suiteId) ?? null;
+            const epoch = ++reloadEpoch;
+            activeSuite = suite;
+            replace(embedHost);
+            const cases = suite ? await lab.getSuiteCases(suite) : [];
+            if (epoch !== reloadEpoch || activeSuite?.id !== suiteId || !root) {
+                return;
+            }
+            renderEmbedSection(cases);
         });
 
         fileInput = element('input', {
@@ -283,25 +356,38 @@ export function createSettingsTab({ onChanged = null } = {}) {
             if (!confirmed) {
                 return;
             }
-            for (const testCase of await storage.listCases()) {
-                for (const entry of await storage.listRuns(testCase.id)) {
-                    await storage.deleteRun(testCase.id, entry.id);
+            const task = registerActiveTask('run history deletion');
+            try {
+                for (const testCase of await storage.listCases()) {
+                    for (const entry of await storage.listRuns(testCase.id)) {
+                        await storage.deleteRun(testCase.id, entry.id);
+                    }
                 }
-            }
-            // The baseline pointers now point at nothing; clearing them keeps
-            // every suite honest about having no baselines any more.
-            for (const suite of await storage.listSuites()) {
-                if (Object.keys(suite.baselines ?? {}).length) {
-                    await storage.saveSuite({ ...suite, baselines: {} });
+                // The baseline pointers now point at nothing; clearing them keeps
+                // every suite honest about having no baselines any more.
+                for (const suite of await storage.listSuites()) {
+                    await storage.updateSuite(suite.id, (current) => {
+                        current.baselines = {};
+                    });
                 }
+                await reload();
+                status.textContent = 'Deleted every saved run and cleared every baseline.';
+                onChanged?.();
+            } finally {
+                task.release();
             }
-            status.textContent = 'Deleted every saved run and cleared every baseline.';
-            onChanged?.();
         }, { className: 'menu_button sbpl-button' });
 
         status = statusRegion('');
         embedHost = element('div', { className: 'sbpl-embed-section' });
 
+        if (readOnly) {
+            root.append(element('p', {
+                className: 'sbpl-settings-note',
+                text: 'These settings were saved by a newer Prompting Lab version and are read-only until this extension is updated. The stored settings have not been changed.',
+                attributes: { role: 'status' },
+            }));
+        }
         root.append(
             field('Runs kept for each test case', retention, {
                 hint: 'Older runs are removed to save space. A run set as a baseline is always kept.',
@@ -336,6 +422,7 @@ export function createSettingsTab({ onChanged = null } = {}) {
             void reload().catch(() => {});
         },
         dispose() {
+            reloadEpoch++;
             root?.remove();
             root = null;
         },

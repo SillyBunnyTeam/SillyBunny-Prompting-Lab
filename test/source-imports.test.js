@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { installStubContext } from './helpers/stub-context.js';
 
-const root = path.resolve(import.meta.dirname, '..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const srcRoot = path.join(root, 'src');
 
 async function jsFilesBelow(directory) {
@@ -105,4 +109,27 @@ test('the capture path never writes back to host prompt payloads', async () => {
             'capture.js must observe prompts without changing them',
         );
     }
+});
+
+test('the browser fixture server only serves test assets and survives malformed URLs', { timeout: 10_000 }, async (t) => {
+    const server = spawn(process.execPath, [path.join(root, 'scripts/serve-tests.js')], {
+        env: { ...process.env, PORT: '0' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    t.after(() => server.kill());
+    const lines = createInterface({ input: server.stdout });
+    t.after(() => lines.close());
+    let stderr = '';
+    server.stderr.on('data', chunk => { stderr += chunk; });
+    const line = await Promise.race([
+        once(lines, 'line').then(([value]) => value),
+        once(server, 'exit').then(([code]) => { throw new Error(`fixture server exited with ${code}: ${stderr}`); }),
+    ]);
+    const baseUrl = line.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
+    assert.ok(baseUrl, `fixture server did not report its URL: ${line}`);
+
+    assert.equal((await fetch(`${baseUrl}/%E0%A4%A`)).status, 400);
+    assert.equal((await fetch(`${baseUrl}/.git/config`)).status, 403);
+    assert.equal((await fetch(`${baseUrl}/README.md`)).status, 403);
+    assert.equal((await fetch(`${baseUrl}/test/browser/fixture.html`)).status, 200);
 });

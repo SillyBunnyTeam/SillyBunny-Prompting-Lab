@@ -164,3 +164,45 @@ test('diffSection applies volatile spans only to the requested section', () => {
         normalize: true,
     }).parts), false);
 });
+
+test('diffSection selects and normalizes one duplicate occurrence', () => {
+    const baseline = {
+        capture: {
+            sections: [
+                { id: 'main', content: 'Roll: 3 done', tokens: 1 },
+                { id: 'main', content: 'Roll: 3 done', tokens: 2 },
+            ],
+        },
+    };
+    const current = {
+        capture: {
+            sections: [
+                { id: 'main', content: 'Roll: 7 done', tokens: 3 },
+                { id: 'main', content: 'Roll: 7 done', tokens: 4 },
+            ],
+        },
+    };
+    const volatileSpans = [{
+        section: 'main',
+        occurrence: 0,
+        text: '3',
+        otherText: '7',
+        anchorBefore: 'Roll: ',
+        anchorAfter: ' done',
+    }];
+
+    assert.equal(isUnchanged(diffSection(baseline, current, 'main', {
+        occurrence: 0,
+        volatileSpans,
+        normalize: true,
+    }).parts), true);
+    const second = diffSection(baseline, current, 'main', {
+        occurrence: 1,
+        volatileSpans,
+        normalize: true,
+    });
+    assert.equal(second.occurrence, 1);
+    assert.equal(second.baselineTokens, 2);
+    assert.equal(second.currentTokens, 4);
+    assert.equal(isUnchanged(second.parts), false);
+});

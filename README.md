@@ -53,6 +53,8 @@ No server plugin or build step is needed.
 - **Passed** means every check passed and nothing differs from your baseline.
 - **Changed** means the checks still pass, but the prompt is not the same as your baseline. This is
   the state worth looking at after you edit a preset.
+- **Needs review** means one or more checks could not be evaluated. Those checks are marked
+  unchecked and count as neither passes nor failures.
 - **Failed** means one of your checks did not pass.
 - **Could not run** means something went wrong before a prompt could be built, such as a missing
   character.
@@ -61,11 +63,16 @@ Each run also lists what a test cannot reproduce. A test build skips extensions 
 history at the last moment, such as vector storage and summaries, so a real reply may contain
 content a test does not show. These notes appear on the run itself rather than in the manual.
 
+For Chat Completion, comparisons use the exact ordered messages after final prompt interceptors.
+When an interceptor changes those messages after the section breakdown was built, the run shows a
+zero-token **Final interceptor output** section and marks its section and token metrics incomplete;
+the final-message comparison remains exact, but the earlier metrics may not explain the change.
+
 ## The workspace
 
 Opened as a full page, the lab lays itself out as a workbench. The sections are
 listed down the left under **Build**, **Run**, **Compare** and **Set up**, each
-with a line saying what it is for, and the two sections that spend tokens are
+with a line saying what it is for, and the three sections that spend tokens are
 marked as such before you open them. The rest of the window is one work
 surface, with a heading that repeats what the section does and what it costs to
 use. At the foot of the list is a count of what this workspace holds: suites,
@@ -124,10 +131,14 @@ installed preset, holds it on a clipboard inside the lab; **Paste** adds it to t
 edited. A pasted module always gets a fresh identity, so pasting can never overwrite what a preset
 already has. **To Prompts tab** saves a module into the Prompts space instead.
 
-When a draft is ready, **Publish to SillyBunny** saves it as a new preset. It never overwrites,
-renames, or deletes an installed preset, and it never changes the preset you have selected. Renaming
-and deleting installed presets stays in SillyBunny's own preset menu. SillyBunny reads its preset
-lists while starting, so the workshop offers a reload when you publish.
+When a draft is ready, **Publish to SillyBunny** checks the current catalogue for an exact
+case-insensitive name match before saving. Names SillyBunny would sanitize are refused, including
+filesystem punctuation or control characters, dot-only and Windows-reserved names, trailing dots
+or spaces, and names over 255 UTF-8 bytes. This prevents sanitization collisions and ordinary
+overwrites. The current host has no atomic create-only preset save, so two requests racing for the
+same name cannot be guaranteed never to overwrite. Publishing does not rename or delete installed
+presets or change the selected preset; those operations stay in SillyBunny's preset menu. The host
+reads preset lists while starting, so the workshop offers a reload after publishing.
 
 A draft says so when the preset it was copied from has changed or been uninstalled since.
 
@@ -229,11 +240,10 @@ When the run finishes, **Save as Markdown**, **Save as text** and **Save as web 
 whole comparison to a file: every preset, every turn, what was said and what came back, how long
 each reply took, and any failures, exactly as shown.
 
-Save as web page is the one to use when replies carry markup of their own, such as a tracker or a
-styled card: the saved page renders it instead of showing the tags. That markup was written by a
-model, so scripts, frames and event handlers are removed, and the page itself blocks anything it
-would have to fetch, including remote images. A reply that styles itself may still colour the page
-around it. The file stands on its own and can be opened anywhere.
+Save as web page keeps safe text formatting from replies, including emphasis, headings, lists and
+tables. Model-written attributes, styles and colours are stripped, as are links, forms, scripts,
+frames and anything the page would have to fetch. The file stands on its own and can be opened
+anywhere.
 
 Before you press the button it says how many requests that will be and roughly how many reply tokens
 they may use. Nothing is added to any chat: the turns are put into the chat in memory only for as
@@ -277,14 +287,16 @@ money. Where it can, it names the macro responsible.
 
 ```sh
 npm ci
+npx playwright install --with-deps chromium webkit
 npm test
-npm run test:browser
+npm run test:browser:all
 ```
 
-Set `SILLYBUNNY_ROOT` to check the extension against a different SillyBunny checkout:
+Set `SILLYBUNNY_ROOT` in your shell to check the extension against a different SillyBunny checkout,
+then run:
 
 ```sh
-SILLYBUNNY_ROOT=/path/to/SillyBunny npm run test:host
+npm run test:host
 ```
 
 `npm run test:host` verifies that this SillyBunny build still provides everything Prompting Lab

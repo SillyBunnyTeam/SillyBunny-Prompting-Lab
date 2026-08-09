@@ -1,6 +1,7 @@
 import { copyPrompt } from '../clipboard.js';
 import { button, confirmButton, element, emptyState, errorMessage, field, formatTokens, promptField, replace, statusRegion } from '../dom.js';
 import { countTokens } from '../host.js';
+import { registerActiveTask } from '../operations.js';
 import {
     addVersion,
     draftToModule,
@@ -32,10 +33,19 @@ export function createPromptsTab({ onChanged = null } = {}) {
     let presetDrafts = [];
     let editing = null;
     let expandedVersion = '';
+    let reloadEpoch = 0;
 
     async function reload({ keepEditor = false } = {}) {
-        prompts = await storage.listPromptDrafts();
-        presetDrafts = (await storage.listDrafts()).filter(draft => draft.apiId === 'openai');
+        const epoch = ++reloadEpoch;
+        const [nextPrompts, drafts] = await Promise.all([
+            storage.listPromptDrafts(),
+            storage.listDrafts(),
+        ]);
+        if (epoch !== reloadEpoch || !root) {
+            return;
+        }
+        prompts = nextPrompts;
+        presetDrafts = drafts.filter(draft => draft.apiId === 'openai');
         renderAll({ keepEditor });
     }
 
@@ -82,22 +92,37 @@ export function createPromptsTab({ onChanged = null } = {}) {
                     renderEditor();
                 }, { className: 'menu_button sbpl-button' }),
                 button('Duplicate', async () => {
+                    const source = structuredClone(prompt);
                     const copy = createPromptDraft({
-                        ...structuredClone(prompt),
+                        ...source,
                         id: undefined,
-                        title: `${prompt.title} (copy)`,
+                        title: `${source.title} (copy)`,
                     });
-                    await storage.savePromptDraft(copy);
-                    status.textContent = `Duplicated "${prompt.title}".`;
-                    await reload();
+                    const task = registerActiveTask('prompt duplication');
+                    try {
+                        await storage.savePromptDraft(copy);
+                        onChanged?.();
+                        status.textContent = `Duplicated "${source.title}".`;
+                        await reload();
+                    } finally {
+                        task.release();
+                    }
                 }, { className: 'menu_button sbpl-button' }),
                 confirmButton('Delete', async () => {
-                    await storage.deletePromptDraft(prompt.id);
-                    if (editing?.id === prompt.id) {
-                        editing = null;
+                    const promptId = prompt.id;
+                    const editor = editing;
+                    const task = registerActiveTask('prompt deletion');
+                    try {
+                        await storage.deletePromptDraft(promptId);
+                        if (editing === editor && editing?.id === promptId) {
+                            editing = null;
+                        }
+                        onChanged?.();
+                        status.textContent = `Deleted "${prompt.title}" and every draft it held.`;
+                        await reload();
+                    } finally {
+                        task.release();
                     }
-                    status.textContent = `Deleted "${prompt.title}" and every draft it held.`;
-                    await reload();
                 }, { className: 'menu_button sbpl-button', confirmLabel: 'Press again to delete' }),
             );
             item.append(label, actions);
@@ -149,15 +174,25 @@ export function createPromptsTab({ onChanged = null } = {}) {
         const actions = element('div', { className: 'sbpl-editor-actions' });
         actions.append(
             button('Save prompt', async () => {
-                const found = validatePromptDraft(editing);
+                const editor = editing;
+                const payload = structuredClone(editor);
+                const found = validatePromptDraft(payload);
                 replace(problems, ...found.map(text => element('li', { text })));
                 if (found.length) {
                     return;
                 }
-                const saved = await storage.savePromptDraft(editing);
-                editing = saved;
-                status.textContent = `Saved "${saved.title}".`;
-                await reload();
+                const task = registerActiveTask('prompt save');
+                try {
+                    const saved = await storage.savePromptDraft(payload);
+                    if (editing === editor) {
+                        editing = saved;
+                    }
+                    onChanged?.();
+                    status.textContent = `Saved "${saved.title}".`;
+                    await reload({ keepEditor: editing !== saved && Boolean(editing) });
+                } finally {
+                    task.release();
+                }
             }, { className: 'menu_button menu_button_primary sbpl-button' }),
             button('Copy for pasting', () => {
                 copyPrompt(draftToModule(editing), `prompt "${editing.title}"`);
@@ -312,17 +347,24 @@ export function createPromptsTab({ onChanged = null } = {}) {
     }
 
     async function sendToPreset(draftId) {
-        const target = await storage.getDraft(draftId);
-        if (!target) {
-            status.textContent = 'That preset draft could not be loaded.';
-            return;
+        const targetId = draftId;
+        const prompt = structuredClone(editing);
+        const module = draftToModule(prompt);
+        const task = registerActiveTask('prompt send to preset');
+        try {
+            const target = await storage.getDraft(targetId);
+            if (!target) {
+                status.textContent = 'That preset draft could not be loaded.';
+                return;
+            }
+            target.payload = addPromptModule(target.payload, module);
+            await storage.saveDraft(target);
+            status.textContent = `Sent "${prompt.title}" to "${target.name}". Open it on the Presets tab to review.`;
+            onChanged?.();
+            await reload();
+        } finally {
+            task.release();
         }
-        const module = draftToModule(editing);
-        target.payload = addPromptModule(target.payload, module);
-        await storage.saveDraft(target);
-        status.textContent = `Sent "${editing.title}" to "${target.name}". Open it on the Presets tab to review.`;
-        onChanged?.();
-        await reload();
     }
 
     function renderAll({ keepEditor = false } = {}) {
@@ -345,11 +387,20 @@ export function createPromptsTab({ onChanged = null } = {}) {
         controls.append(
             searchInput,
             button('New prompt', async () => {
+                const editor = editing;
                 const draft = createPromptDraft({ title: `Prompt ${prompts.length + 1}` });
-                await storage.savePromptDraft(draft);
-                editing = draft;
-                expandedVersion = draft.selectedVersionId;
-                await reload();
+                const task = registerActiveTask('prompt creation');
+                try {
+                    await storage.savePromptDraft(draft);
+                    if (editing === editor) {
+                        editing = draft;
+                        expandedVersion = draft.selectedVersionId;
+                    }
+                    onChanged?.();
+                    await reload();
+                } finally {
+                    task.release();
+                }
             }, { className: 'menu_button menu_button_primary sbpl-button' }),
         );
 
@@ -383,6 +434,7 @@ export function createPromptsTab({ onChanged = null } = {}) {
             void reload({ keepEditor: true }).catch(() => {});
         },
         dispose() {
+            reloadEpoch++;
             root?.remove();
             root = null;
         },

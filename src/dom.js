@@ -93,7 +93,7 @@ export function promptField(labelText, {
     const label = element('label', { className: 'sbpl-field-label', attributes: { for: id } });
     label.textContent = labelText;
     const head = element('div', { className: 'sbpl-prompt-head' });
-    head.append(label, element('div', {
+    const maximize = element('div', {
         className: 'editor_maximize sbpl-maximize',
         attributes: {
             'data-for': id,
@@ -102,7 +102,14 @@ export function promptField(labelText, {
             tabindex: '0',
             'aria-label': `Open ${labelText} in a large editor`,
         },
-    }));
+    });
+    maximize.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            maximize.click();
+        }
+    });
+    head.append(label, maximize);
     const wrapper = element('div', { className });
     wrapper.append(head, textarea);
     if (hint) {
@@ -123,18 +130,30 @@ export function confirmButton(label, onConfirm, {
 } = {}) {
     let armed = false;
     let timer = null;
-    const node = button(label, () => {
+    const node = button(label, async () => {
+        if (node.disabled) {
+            return;
+        }
         if (armed) {
             armed = false;
             clearTimeout(timer);
+            timer = null;
             node.textContent = label;
-            onConfirm();
+            node.disabled = true;
+            try {
+                await onConfirm();
+            } catch (error) {
+                node.textContent = `${label} failed: ${errorMessage(error)}`;
+            } finally {
+                node.disabled = false;
+            }
             return;
         }
         armed = true;
         node.textContent = confirmLabel;
         timer = setTimeout(() => {
             armed = false;
+            timer = null;
             if (node.isConnected) {
                 node.textContent = label;
             }
