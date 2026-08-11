@@ -5,6 +5,21 @@ import { getSettings } from './settings.js';
 import * as storage from './storage.js';
 
 /**
+ * Per-device, like SillyBunny-Debugger's capture toggle: extensionSettings
+ * syncs across devices, and turning recording on here must not silently turn
+ * it on everywhere.
+ */
+const ENABLED_KEY = 'SBPromptingLab_ledgerEnabled';
+
+export function isLedgerRecordingEnabled(context = getContext()) {
+    return context?.accountStorage?.getItem?.(ENABLED_KEY) === 'true';
+}
+
+export function setLedgerRecordingEnabled(value, context = getContext()) {
+    context?.accountStorage?.setItem?.(ENABLED_KEY, value ? 'true' : 'false');
+}
+
+/**
  * Records where the tokens of real generations went.
  *
  * This is the one part of Prompting Lab that observes generations it did not
@@ -150,7 +165,7 @@ export function createLedger({ onRecorded = null } = {}) {
             }
         },
         sync() {
-            this.setEnabled(getSettings().ledgerEnabled);
+            this.setEnabled(isLedgerRecordingEnabled());
         },
         isEnabled() {
             return enabled;

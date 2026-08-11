@@ -40,9 +40,9 @@ export function normalizeSettings(value) {
             ? source.normalizeVolatile
             : DEFAULT_SETTINGS.normalizeVolatile,
         dismissedWarnings,
-        ledgerEnabled: typeof source.ledgerEnabled === 'boolean'
-            ? source.ledgerEnabled
-            : DEFAULT_SETTINGS.ledgerEnabled,
+        // The recording switch itself lives in accountStorage, per device:
+        // extensionSettings syncs, and opting in on one device must not
+        // silently start recording on every other one.
         ledgerRetention: integer(source.ledgerRetention, DEFAULT_SETTINGS.ledgerRetention, 10, 2000),
     };
 }

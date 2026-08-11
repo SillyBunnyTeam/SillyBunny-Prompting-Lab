@@ -181,6 +181,13 @@
                     getCompletionPresetByName: name => presets[name],
                 };
             },
+            accountStorage: (() => {
+                const data = new Map();
+                return {
+                    getItem: key => data.get(key) ?? null,
+                    setItem: (key, value) => data.set(key, String(value)),
+                };
+            })(),
             getCharacterCardFields: () => ({}),
             writeExtensionField: async (index, key, value) => {
                 context.characters[index].data ??= {};

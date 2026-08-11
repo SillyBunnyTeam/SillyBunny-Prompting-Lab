@@ -1,4 +1,5 @@
 import { element, emptyState, errorMessage, field, formatTokens, replace, statusRegion, button } from '../dom.js';
+import { isLedgerRecordingEnabled, setLedgerRecordingEnabled } from '../ledger.js';
 import { getSettings, isSettingsReadOnly, updateSettings } from '../settings.js';
 import * as storage from '../storage.js';
 
@@ -148,12 +149,11 @@ export function createLedgerTab({ ledger }) {
     }
 
     function syncControls() {
-        const settings = getSettings();
         if (enableInput) {
-            enableInput.checked = settings.ledgerEnabled;
+            enableInput.checked = isLedgerRecordingEnabled();
         }
         if (retentionInput && document.activeElement !== retentionInput) {
-            retentionInput.value = String(settings.ledgerRetention);
+            retentionInput.value = String(getSettings().ledgerRetention);
         }
     }
 
@@ -164,20 +164,21 @@ export function createLedgerTab({ ledger }) {
         status = statusRegion('');
 
         enableInput = element('input', { className: 'sbpl-checkbox', attributes: { type: 'checkbox' } });
-        enableInput.checked = settings.ledgerEnabled;
-        enableInput.disabled = readOnly;
+        enableInput.checked = isLedgerRecordingEnabled();
         enableInput.addEventListener('change', () => {
-            const next = updateSettings({ ledgerEnabled: enableInput.checked });
-            ledger.setEnabled(next.ledgerEnabled);
-            enableInput.checked = next.ledgerEnabled;
-            status.textContent = next.ledgerEnabled
-                ? 'Recording is on. Each reply you send will be added here.'
-                : 'Recording is off. Nothing new will be added.';
+            setLedgerRecordingEnabled(enableInput.checked);
+            ledger.setEnabled(enableInput.checked);
+            status.textContent = enableInput.checked
+                ? 'Recording is on, on this device. Each reply you send will be added here.'
+                : 'Recording is off on this device. Nothing new will be added.';
         });
         const enableChoice = element('label', { className: 'sbpl-field sbpl-field-inline' });
         enableChoice.append(enableInput, element('span', {
             className: 'sbpl-field-label',
             text: 'Record where the tokens of real replies go',
+        }), element('span', {
+            className: 'sbpl-field-hint',
+            text: 'A per-device switch: it never syncs to your other devices.',
         }));
 
         retentionInput = element('input', {

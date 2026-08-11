@@ -1771,7 +1771,7 @@ test('the token ledger lists recorded prompts and persists its switch', async ({
 
     await panel.locator('.sbpl-checkbox').first().check();
     const enabled = await page.evaluate(
-        () => globalThis.SillyTavern.getContext().extensionSettings.SillyBunnyPromptingLab.ledgerEnabled,
+        () => globalThis.SillyTavern.getContext().accountStorage.getItem('SBPromptingLab_ledgerEnabled'),
     );
-    expect(enabled).toBe(true);
+    expect(enabled).toBe('true');
 });

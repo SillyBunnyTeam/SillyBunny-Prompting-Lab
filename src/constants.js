@@ -250,7 +250,6 @@ export const DEFAULT_SETTINGS = Object.freeze({
     abMaxTokens: 300,
     normalizeVolatile: true,
     dismissedWarnings: Object.freeze({}),
-    ledgerEnabled: false,
     ledgerRetention: 200,
 });
 

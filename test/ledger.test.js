@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import { SETTINGS_KEY } from '../src/constants.js';
-import { createLedger } from '../src/ledger.js';
+import { createLedger, isLedgerRecordingEnabled, setLedgerRecordingEnabled } from '../src/ledger.js';
 import { migrateLedgerEntry, normalizeLedgerEntry } from '../src/schema.js';
 import { summarizeLedger } from '../src/ui/ledger-tab.js';
 import { __setStoreForTests, countLedger, createMemoryStore, listLedger } from '../src/storage.js';
@@ -142,6 +142,28 @@ test('prunes recordings down to the retention setting', async () => {
         await ledger.whenIdle();
     }
     assert.equal(await countLedger(), 10);
+    ledger.dispose();
+});
+
+test('the recording switch is stored per device in accountStorage', async () => {
+    const data = new Map();
+    ctx.accountStorage = {
+        getItem: key => data.get(key) ?? null,
+        setItem: (key, value) => data.set(key, String(value)),
+    };
+    assert.equal(isLedgerRecordingEnabled(ctx), false);
+    setLedgerRecordingEnabled(true, ctx);
+    assert.equal(isLedgerRecordingEnabled(ctx), true);
+    assert.equal(data.get('SBPromptingLab_ledgerEnabled'), 'true');
+    assert.ok(!('ledgerEnabled' in (ctx.extensionSettings[SETTINGS_KEY] ?? {})));
+
+    const ledger = createLedger();
+    ledger.sync();
+    assert.equal(ledger.isEnabled(), true);
+    setLedgerRecordingEnabled(false, ctx);
+    ledger.sync();
+    assert.equal(ledger.isEnabled(), false);
+    assert.equal(events.handlerCount(), 0);
     ledger.dispose();
 });
 
