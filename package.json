@@ -1,6 +1,6 @@
 {
     "name": "sillybunny-prompting-lab",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "private": true,
     "type": "module",
     "description": "Save prompt test cases for your characters and check whether a preset, macro, or update changed the prompts they produce.",

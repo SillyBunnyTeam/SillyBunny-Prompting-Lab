@@ -193,9 +193,9 @@ test('the drawer offers the full page without going through the wand', async ({ 
 test('the workbench exposes every tab and marks one as selected', async ({ page }) => {
     await page.locator('#sbpl-menu-item').click();
     const tabs = page.locator('#sbpl-workbench .sbpl-tab');
-    await expect(tabs).toHaveCount(9);
+    await expect(tabs).toHaveCount(10);
     await expect(tabs.locator('.sbpl-tab-label')).toHaveText([
-        'Tests', 'Presets', 'Prompts', 'Run tests',
+        'Tests', 'Presets', 'Prompts', 'Run tests', 'Token ledger',
         'Compare runs', 'Compare prompts', 'Compare models', 'Compare scenes', 'Settings',
     ]);
     await expect(page.locator('.sbpl-tab[aria-selected="true"]')).toHaveCount(1);

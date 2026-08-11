@@ -1572,3 +1572,61 @@
 .sbpl-modules-head .sbpl-field-label {
     margin: 0;
 }
+
+.sbpl-ledger-tab {
+    display: grid;
+    gap: 14px;
+    max-width: 860px;
+}
+
+.sbpl-ledger-summary-rows {
+    display: grid;
+    gap: 4px;
+    max-width: 420px;
+}
+
+.sbpl-ledger-list {
+    display: grid;
+    gap: 8px;
+}
+
+.sbpl-ledger-entry {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(120, 120, 120, 0.35));
+    border-radius: 6px;
+    padding: 6px 10px;
+}
+
+.sbpl-ledger-entry summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    align-items: baseline;
+    cursor: pointer;
+}
+
+.sbpl-ledger-when {
+    font-size: 0.82rem;
+    opacity: 0.8;
+}
+
+.sbpl-ledger-name {
+    font-weight: 600;
+}
+
+.sbpl-ledger-kind {
+    font-size: 0.82rem;
+    opacity: 0.8;
+}
+
+.sbpl-ledger-total {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+}
+
+.sbpl-ledger-sections {
+    display: grid;
+    gap: 4px;
+    margin: 8px 0 2px;
+    padding-left: 20px;
+    font-size: 0.85rem;
+}

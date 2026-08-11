@@ -2,6 +2,7 @@ import {
     ASSERTION,
     CASE_VERSION,
     DRAFT_VERSION,
+    LEDGER_VERSION,
     MAX_REGEX_LENGTH,
     PROMPT_DRAFT_VERSION,
     RUN_VERSION,
@@ -632,6 +633,46 @@ export function migrateRun(value) {
         return null;
     }
     return normalizeRun(source);
+}
+
+/* ---------------------------------------------------------- ledger entry */
+
+export function createLedgerEntry(patch = {}) {
+    return normalizeLedgerEntry({
+        v: LEDGER_VERSION,
+        id: newId(),
+        at: new Date().toISOString(),
+        ...patch,
+    });
+}
+
+export function normalizeLedgerEntry(value) {
+    const source = plainObject(value);
+    return {
+        v: LEDGER_VERSION,
+        id: text(source.id) || newId(),
+        at: text(source.at),
+        kind: text(source.kind, 'normal') || 'normal',
+        apiType: source.apiType === 'tc' ? 'tc' : 'cc',
+        api: text(source.api),
+        characterName: text(source.characterName),
+        total: integer(source.total, 0, 0),
+        estimated: bool(source.estimated),
+        sections: list(source.sections).map(section => ({
+            id: text(section?.id),
+            label: text(section?.label),
+            tokens: integer(section?.tokens, 0, 0),
+        })).filter(section => section.id),
+        wiEntryCount: integer(source.wiEntryCount, 0, 0),
+    };
+}
+
+export function migrateLedgerEntry(value) {
+    const source = plainObject(value);
+    if (integer(source.v, 0, 0) > LEDGER_VERSION) {
+        return null;
+    }
+    return normalizeLedgerEntry(source);
 }
 
 /**
