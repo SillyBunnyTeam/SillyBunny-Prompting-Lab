@@ -14,6 +14,7 @@ export const PROMPT_DRAFT_VERSION = 1;
 export const SUITE_VERSION = 1;
 export const RUN_VERSION = 2;
 export const EMBED_VERSION = 1;
+export const LEDGER_VERSION = 1;
 
 export const STORE_PREFIX = Object.freeze({
     SUITE: 'suite:',
@@ -21,6 +22,7 @@ export const STORE_PREFIX = Object.freeze({
     RUN: 'run:',
     DRAFT: 'draft:',
     PROMPT: 'prompt:',
+    LEDGER: 'ledger:',
 });
 
 export const INDEX_KEY = Object.freeze({
@@ -29,6 +31,7 @@ export const INDEX_KEY = Object.freeze({
     RUNS: 'index:runs:',
     DRAFTS: 'index:drafts',
     PROMPTS: 'index:prompts',
+    LEDGER: 'index:ledger',
 });
 
 /** Status of a single case within a run. */
@@ -137,6 +140,7 @@ export const TAB = Object.freeze({
     PRESETS: 'presets',
     PROMPTS: 'prompts',
     RUN: 'run',
+    LEDGER: 'ledger',
     DIFF: 'diff',
     EXPERIMENT: 'experiment',
     AB: 'ab',
@@ -149,6 +153,7 @@ export const TAB_LABEL = Object.freeze({
     [TAB.PRESETS]: 'Presets',
     [TAB.PROMPTS]: 'Prompts',
     [TAB.RUN]: 'Run tests',
+    [TAB.LEDGER]: 'Token ledger',
     [TAB.DIFF]: 'Compare runs',
     [TAB.EXPERIMENT]: 'Compare prompts',
     [TAB.AB]: 'Compare models',
@@ -184,6 +189,12 @@ export const TAB_META = Object.freeze({
         icon: 'fa-play',
         hint: 'Build every prompt in a suite',
         blurb: 'Rebuilds each prompt the way SillyBunny would before sending it, then checks it and compares it against your baseline.',
+        sends: false,
+    }),
+    [TAB.LEDGER]: Object.freeze({
+        icon: 'fa-receipt',
+        hint: 'Where the tokens of real replies went',
+        blurb: 'Records the prompt behind each reply you actually send — with the token cost of every section — once recording is switched on. Recording stays off until you turn it on, and this tab never sends anything itself.',
         sends: false,
     }),
     [TAB.DIFF]: Object.freeze({
@@ -224,7 +235,7 @@ export const TAB_META = Object.freeze({
  */
 export const TAB_GROUPS = Object.freeze([
     Object.freeze({ id: 'build', label: 'Build', tabs: Object.freeze([TAB.CASES, TAB.PRESETS, TAB.PROMPTS]) }),
-    Object.freeze({ id: 'run', label: 'Run', tabs: Object.freeze([TAB.RUN]) }),
+    Object.freeze({ id: 'run', label: 'Run', tabs: Object.freeze([TAB.RUN, TAB.LEDGER]) }),
     Object.freeze({ id: 'compare', label: 'Compare', tabs: Object.freeze([TAB.DIFF, TAB.EXPERIMENT, TAB.AB, TAB.SCENES]) }),
     Object.freeze({ id: 'setup', label: 'Set up', tabs: Object.freeze([TAB.SETTINGS]) }),
 ]);
@@ -239,6 +250,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
     abMaxTokens: 300,
     normalizeVolatile: true,
     dismissedWarnings: Object.freeze({}),
+    ledgerEnabled: false,
+    ledgerRetention: 200,
 });
 
 /** Regex input is untrusted; short catastrophic patterns can still backtrack. */

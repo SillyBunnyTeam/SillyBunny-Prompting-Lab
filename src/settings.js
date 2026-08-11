@@ -40,6 +40,10 @@ export function normalizeSettings(value) {
             ? source.normalizeVolatile
             : DEFAULT_SETTINGS.normalizeVolatile,
         dismissedWarnings,
+        ledgerEnabled: typeof source.ledgerEnabled === 'boolean'
+            ? source.ledgerEnabled
+            : DEFAULT_SETTINGS.ledgerEnabled,
+        ledgerRetention: integer(source.ledgerRetention, DEFAULT_SETTINGS.ledgerRetention, 10, 2000),
     };
 }
 

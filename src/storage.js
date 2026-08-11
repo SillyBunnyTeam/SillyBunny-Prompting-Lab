@@ -2,11 +2,13 @@ import { DB_NAME, INDEX_KEY, STORE_PREFIX } from './constants.js';
 import {
     migrateCase,
     migrateDraft,
+    migrateLedgerEntry,
     migratePromptDraft,
     migrateRun,
     migrateSuite,
     normalizeCase,
     normalizeDraft,
+    normalizeLedgerEntry,
     normalizePromptDraft,
     normalizeRun,
     normalizeSuite,
@@ -305,6 +307,58 @@ export async function listPromptDrafts() {
 
 export function deletePromptDraft(id) {
     return enqueueMutation(target => deleteIndexedUnlocked(STORE_PREFIX.PROMPT, INDEX_KEY.PROMPTS, id, target));
+}
+
+/* -------------------------------------------------------------- ledger */
+
+export function saveLedgerEntry(entry) {
+    return enqueueMutation(target => saveIndexedUnlocked(
+        STORE_PREFIX.LEDGER,
+        INDEX_KEY.LEDGER,
+        entry,
+        normalizeLedgerEntry,
+        target,
+    ));
+}
+
+/** Newest first: the index appends in arrival order. */
+export async function listLedger() {
+    const target = await readyStore();
+    const ids = await readIndex(INDEX_KEY.LEDGER, target);
+    const entries = await Promise.all(ids.map(async (id) => {
+        const value = await target.getItem(`${STORE_PREFIX.LEDGER}${id}`);
+        return value ? migrateLedgerEntry(value) : null;
+    }));
+    return entries.filter(Boolean).reverse();
+}
+
+export async function countLedger() {
+    const target = await readyStore();
+    return (await readIndex(INDEX_KEY.LEDGER, target)).length;
+}
+
+/** Keeps the newest `retention` recorded prompts, by arrival order. */
+async function pruneLedgerUnlocked(retention, target = getStore()) {
+    const ids = await readIndex(INDEX_KEY.LEDGER, target);
+    const excess = ids.slice(0, Math.max(0, ids.length - Math.max(0, retention)));
+    if (!excess.length) {
+        return 0;
+    }
+    await withRollback([INDEX_KEY.LEDGER, ...excess.map(id => `${STORE_PREFIX.LEDGER}${id}`)], async () => {
+        for (const id of excess) {
+            await target.removeItem(`${STORE_PREFIX.LEDGER}${id}`);
+        }
+        await writeIndex(INDEX_KEY.LEDGER, ids.slice(excess.length), target);
+    }, target);
+    return excess.length;
+}
+
+export function pruneLedger(retention) {
+    return enqueueMutation(target => pruneLedgerUnlocked(retention, target));
+}
+
+export function clearLedger() {
+    return enqueueMutation(target => pruneLedgerUnlocked(0, target));
 }
 
 /* ---------------------------------------------------------- test cases */

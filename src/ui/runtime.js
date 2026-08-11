@@ -1,9 +1,11 @@
 import { EXTENSION_LABEL, EXTENSION_NAME, TAB, TAB_LABEL, TAB_META } from '../constants.js';
 import { button, element, replace } from '../dom.js';
+import { createLedger } from '../ledger.js';
 import { createAbTab } from './ab-tab.js';
 import { createCasesTab } from './cases-tab.js';
 import { createDiffTab } from './diff-tab.js';
 import { createExperimentTab } from './experiment-tab.js';
+import { createLedgerTab } from './ledger-tab.js';
 import { createPresetsTab } from './presets-tab.js';
 import { createPromptsTab } from './prompts-tab.js';
 import { createRunTab } from './run-tab.js';
@@ -177,10 +179,19 @@ export function mountRuntimeUi({ signal = null } = {}) {
     const experimentTab = createExperimentTab();
     const abTab = createAbTab();
     const scenesTab = createScenesTab();
+    const ledger = createLedger({
+        onRecorded: () => {
+            ledgerTab.refresh();
+            workbench.refreshReadout();
+        },
+    });
+    const ledgerTab = createLedgerTab({ ledger });
+    ledger.sync();
     workbench.registerTab(TAB.CASES, casesTab);
     workbench.registerTab(TAB.PRESETS, presetsTab);
     workbench.registerTab(TAB.PROMPTS, promptsTab);
     workbench.registerTab(TAB.RUN, runTab);
+    workbench.registerTab(TAB.LEDGER, ledgerTab);
     workbench.registerTab(TAB.DIFF, diffTab);
     workbench.registerTab(TAB.EXPERIMENT, experimentTab);
     const settingsTab = createSettingsTab({
@@ -581,6 +592,7 @@ export function mountRuntimeUi({ signal = null } = {}) {
             disposed = true;
             deactivatePageModal();
             drawerObserver?.disconnect();
+            ledger.dispose();
             workbench.dispose();
             menuItem?.remove();
             settingsRoot?.remove();

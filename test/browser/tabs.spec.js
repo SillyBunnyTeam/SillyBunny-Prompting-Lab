@@ -1698,7 +1698,7 @@ test('an out-of-range setting is corrected rather than accepted', async ({ page 
 
 test('every tab keeps its content inside the panel on a narrow screen', async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 780 });
-    for (const tab of ['cases', 'presets', 'prompts', 'run', 'diff', 'experiment', 'ab', 'scenes', 'settings']) {
+    for (const tab of ['cases', 'presets', 'prompts', 'run', 'ledger', 'diff', 'experiment', 'ab', 'scenes', 'settings']) {
         await openTab(page, tab);
         const overflows = await page.evaluate(
             () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
@@ -1720,7 +1720,7 @@ test('every tab is reachable and operable with the keyboard alone', async ({ pag
     await page.waitForFunction(() => globalThis.__ready === true);
     await page.locator('#sbpl-menu-item').click();
     await page.locator('#sbpl-tab-cases').focus();
-    for (const expected of ['presets', 'prompts', 'run', 'diff', 'experiment', 'ab', 'scenes', 'settings']) {
+    for (const expected of ['presets', 'prompts', 'run', 'ledger', 'diff', 'experiment', 'ab', 'scenes', 'settings']) {
         await page.keyboard.press('ArrowRight');
         await expect(page.locator(`#sbpl-tab-${expected}`)).toHaveAttribute('aria-selected', 'true');
         await expect(page.locator(`#sbpl-tab-${expected}`)).toBeFocused();
@@ -1734,4 +1734,44 @@ test('the focused control shows a visible focus ring', async ({ page }) => {
         node => getComputedStyle(node, ':focus-visible').outlineStyle,
     );
     expect(outline).not.toBe('none');
+});
+
+test('the token ledger lists recorded prompts and persists its switch', async ({ page }) => {
+    await page.goto('/test/browser/fixture.html');
+    await page.waitForFunction(() => globalThis.__ready === true);
+    await page.evaluate(async () => {
+        const { saveLedgerEntry } = await import('/src/storage.js');
+        await saveLedgerEntry({
+            id: 'led-1',
+            at: '2026-08-11T10:00:00.000Z',
+            kind: 'normal',
+            apiType: 'cc',
+            api: 'openai',
+            characterName: 'Seraphina',
+            total: 420,
+            sections: [
+                { id: 'chatHistory', label: 'Chat history', tokens: 300 },
+                { id: 'main', label: 'Main prompt', tokens: 120 },
+            ],
+            wiEntryCount: 1,
+        });
+    });
+    await page.locator('#sbpl-menu-item').click();
+    const panel = await switchTab(page, 'ledger');
+    await expect(panel).toContainText('Record where the tokens of real replies go');
+    await expect(panel).toContainText('never the prompt text itself');
+    await expect(panel).toContainText('Seraphina');
+    await expect(panel).toContainText('420 tokens');
+    await expect(panel).toContainText('Average prompt size');
+
+    const entry = panel.locator('.sbpl-ledger-entry').first();
+    await entry.locator('summary').click();
+    await expect(entry).toContainText('Chat history: 300 tokens');
+    await expect(entry).toContainText('1 lorebook entry activated');
+
+    await panel.locator('.sbpl-checkbox').first().check();
+    const enabled = await page.evaluate(
+        () => globalThis.SillyTavern.getContext().extensionSettings.SillyBunnyPromptingLab.ledgerEnabled,
+    );
+    expect(enabled).toBe(true);
 });
